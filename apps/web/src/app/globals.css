@@ -1,0 +1,156 @@
+@import "tailwindcss";
+
+:root {
+  --background: #fafaff;
+  --foreground: #0f172a;
+  --indigo-50: #f5f3ff;
+  --indigo-100: #ede9fe;
+  --indigo-600: #7c3aed;
+  --indigo-700: #6d28d9;
+  --indigo-950: #2e1065;
+  --emerald-600: #059669;
+  --emerald-700: #047857;
+  --border: #e2e8f0;
+  --muted: #64748b;
+  --card-bg: #ffffff;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-indigo-50: var(--indigo-50);
+  --color-indigo-100: var(--indigo-100);
+  --color-indigo-600: var(--indigo-600);
+  --color-indigo-700: var(--indigo-700);
+  --color-indigo-950: var(--indigo-950);
+  --color-emerald-600: var(--emerald-600);
+  --color-emerald-700: var(--emerald-700);
+  --color-border: var(--border);
+  --color-muted: var(--muted);
+  --color-card-bg: var(--card-bg);
+  --font-sans: var(--font-lato);
+  --font-display: var(--font-cormorant);
+}
+
+html {
+  color-scheme: light;
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: system-ui, -apple-system, sans-serif;
+}
+
+.bg-devotional {
+  background-color: var(--background);
+  background-image:
+    radial-gradient(ellipse 80% 50% at 50% -10%, rgba(79, 70, 229, 0.08), transparent),
+    radial-gradient(circle at 100% 100%, rgba(79, 70, 229, 0.04), transparent 40%),
+    radial-gradient(circle at 0% 80%, rgba(5, 150, 105, 0.04), transparent 35%);
+}
+
+.card-devotional {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  box-shadow:
+    0 1px 3px rgba(15, 23, 42, 0.05),
+    0 10px 30px rgba(15, 23, 42, 0.04);
+}
+
+.input-devotional {
+  width: 100%;
+  border-radius: 0.5rem;
+  border: 1px solid var(--border);
+  background: #fff;
+  padding: 0.625rem 0.875rem;
+  font-size: 0.875rem;
+  color: var(--foreground);
+  outline: none;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.input-devotional:focus {
+  border-color: var(--indigo-600);
+  box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.15);
+}
+
+.input-devotional::placeholder {
+  color: #94a3b8;
+}
+
+.btn-primary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 0.5rem;
+  background: linear-gradient(135deg, var(--indigo-600) 0%, var(--indigo-700) 100%);
+  padding: 0.625rem 1.5rem;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: #fff;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow: 0 2px 8px rgba(79, 70, 229, 0.25);
+  transition: transform 0.15s, box-shadow 0.15s;
+  cursor: pointer;
+}
+
+.btn-primary:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(79, 70, 229, 0.3);
+}
+
+.btn-primary:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.btn-outline {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 0.5rem;
+  border: 1.5px solid var(--indigo-600);
+  background: transparent;
+  padding: 0.625rem 1.5rem;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--indigo-600);
+  transition: background 0.15s;
+  cursor: pointer;
+}
+
+.btn-outline:hover {
+  background: rgba(79, 70, 229, 0.05);
+}
+
+.divider-ornament {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  color: var(--indigo-600);
+  font-size: 0.75rem;
+}
+
+.divider-ornament::before,
+.divider-ornament::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--indigo-100), transparent);
+}
+
+@keyframes slideIn {
+  from {
+    transform: translateX(100%) translateY(0);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0) translateY(0);
+    opacity: 1;
+  }
+}
+
+.animate-slide-in {
+  animation: slideIn 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}

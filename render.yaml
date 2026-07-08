@@ -1,0 +1,21 @@
+# Free Render.com deployment for the API (optional — use when ready)
+# Connect your GitHub repo and set env vars from .env.example
+
+services:
+  - type: web
+    name: vidyasetu-api
+    runtime: node
+    plan: free
+    buildCommand: npm install && npm run build:packages && npm run build -w @vidyasetu/api
+    startCommand: npm run start -w @vidyasetu/api
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        sync: false
+      - key: JWT_ACCESS_SECRET
+        generateValue: true
+      - key: JWT_REFRESH_SECRET
+        generateValue: true
+      - key: CORS_ORIGIN
+        sync: false

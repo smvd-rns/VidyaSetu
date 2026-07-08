@@ -1,0 +1,526 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Enums ───────────────────────────────────────────────────────────────────
+
+enum GlobalRole {
+  SUPER_ADMIN
+  USER
+}
+
+enum CenterStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  SUSPENDED
+}
+
+enum SubscriptionStatus {
+  TRIAL
+  ACTIVE
+  EXPIRED
+}
+
+enum CenterMemberRole {
+  ADMIN
+  TEACHER
+  STAFF
+  STUDENT
+}
+
+enum ApplicationStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum ContentType {
+  PDF
+  DOCX
+  IMAGE
+  OTHER
+}
+
+enum QuestionType {
+  MCQ
+  TRUE_FALSE
+}
+
+// ─── Users & Auth ────────────────────────────────────────────────────────────
+
+model User {
+  id              String    @id @default(cuid())
+  email           String    @unique
+  passwordHash    String    @map("password_hash")
+  firstName       String    @map("first_name")
+  lastName        String    @map("last_name")
+  phone           String?
+  globalRole      GlobalRole @default(USER) @map("global_role")
+  isActive        Boolean   @default(true) @map("is_active")
+  emailVerifiedAt DateTime? @map("email_verified_at")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+
+  refreshTokens       RefreshToken[]
+  passwordResetTokens PasswordResetToken[]
+  centerMemberships   CenterMembership[]
+  centerApplications  CenterApplication[] @relation("Applicant")
+  reviewedApplications CenterApplication[] @relation("Reviewer")
+  approvedCenters     Center[]              @relation("ApprovedBy")
+  activityLogs        ActivityLog[]
+
+  @@map("users")
+}
+
+model RefreshToken {
+  id        String   @id @default(cuid())
+  userId    String   @map("user_id")
+  tokenHash String   @map("token_hash")
+  expiresAt DateTime @map("expires_at")
+  createdAt DateTime @default(now()) @map("created_at")
+  revokedAt DateTime? @map("revoked_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("refresh_tokens")
+}
+
+model PasswordResetToken {
+  id        String   @id @default(cuid())
+  userId    String   @map("user_id")
+  tokenHash String   @map("token_hash")
+  expiresAt DateTime @map("expires_at")
+  usedAt    DateTime? @map("used_at")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("password_reset_tokens")
+}
+
+// ─── Centers (multi-tenant root) ─────────────────────────────────────────────
+
+model Center {
+  id                    String             @id @default(cuid())
+  name                  String
+  slug                  String             @unique
+  description           String?
+  address               String?
+  city                  String?
+  state                 String?
+  phone                 String?
+  email                 String?
+  status                CenterStatus       @default(PENDING)
+  subscriptionStatus    SubscriptionStatus @default(TRIAL) @map("subscription_status")
+  subscriptionExpiresAt DateTime?          @map("subscription_expires_at")
+  joinCode              String?            @unique @map("join_code")
+  approvedAt            DateTime?          @map("approved_at")
+  approvedById          String?            @map("approved_by_id")
+  createdAt             DateTime           @default(now()) @map("created_at")
+  updatedAt             DateTime           @updatedAt @map("updated_at")
+
+  approvedBy   User?              @relation("ApprovedBy", fields: [approvedById], references: [id])
+  application  CenterApplication?
+  memberships  CenterMembership[]
+  batches      Batch[]
+  courses      Course[]
+  youtubeChannels YoutubeChannel[]
+  notes        Note[]
+  tests        Test[]
+  activityLogs ActivityLog[]
+  media        CenterMedia[]
+
+  @@map("centers")
+}
+
+model CenterApplication {
+  id              String            @id @default(cuid())
+  centerId        String            @unique @map("center_id")
+  applicantUserId String            @map("applicant_user_id")
+  message         String?
+  status          ApplicationStatus @default(PENDING)
+  reviewedAt      DateTime?         @map("reviewed_at")
+  reviewedById    String?           @map("reviewed_by_id")
+  rejectionReason String?           @map("rejection_reason")
+  createdAt       DateTime          @default(now()) @map("created_at")
+  updatedAt       DateTime          @updatedAt @map("updated_at")
+
+  center    Center @relation(fields: [centerId], references: [id], onDelete: Cascade)
+  applicant User   @relation("Applicant", fields: [applicantUserId], references: [id])
+  reviewer  User?  @relation("Reviewer", fields: [reviewedById], references: [id])
+
+  @@map("center_applications")
+}
+
+model CenterMembership {
+  id        String           @id @default(cuid())
+  userId    String           @map("user_id")
+  centerId  String           @map("center_id")
+  role      CenterMemberRole
+  isActive  Boolean          @default(true) @map("is_active")
+  isApproved Boolean          @default(true) @map("is_approved")
+  // Staff permission flags — only used when role = STAFF
+  canManageStudents Boolean  @default(false) @map("can_manage_students")
+  canManageContent  Boolean  @default(false) @map("can_manage_content")
+  canManageTests    Boolean  @default(false) @map("can_manage_tests")
+  canViewReports    Boolean  @default(true)  @map("can_view_reports")
+  joinedAt  DateTime         @default(now()) @map("joined_at")
+  updatedAt DateTime         @updatedAt @map("updated_at")
+
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  center Center @relation(fields: [centerId], references: [id], onDelete: Cascade)
+  batchMemberships BatchMembership[]
+  studentProgress  StudentProgress[]
+  testResults      TestResult[]
+  videoLikes       VideoLike[]
+
+  @@unique([userId, centerId])
+  @@index([centerId, role])
+  @@map("center_memberships")
+}
+
+// ─── Academic structure (all scoped to centerId) ─────────────────────────────
+
+model Batch {
+  id          String   @id @default(cuid())
+  centerId    String   @map("center_id")
+  name        String
+  description String?
+  startDate   DateTime? @map("start_date")
+  endDate     DateTime? @map("end_date")
+  isActive    Boolean  @default(true) @map("is_active")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  center      Center            @relation(fields: [centerId], references: [id], onDelete: Cascade)
+  memberships BatchMembership[]
+  courseAssignments BatchCourse[]
+  youtubeChannels BatchYoutubeChannel[]
+
+  @@index([centerId])
+  @@map("batches")
+}
+
+model BatchMembership {
+  id           String @id @default(cuid())
+  batchId      String @map("batch_id")
+  membershipId String @map("membership_id")
+
+  batch      Batch            @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  membership CenterMembership @relation(fields: [membershipId], references: [id], onDelete: Cascade)
+
+  @@unique([batchId, membershipId])
+  @@map("batch_memberships")
+}
+
+model Course {
+  id          String   @id @default(cuid())
+  centerId    String   @map("center_id")
+  title       String
+  description String?
+  thumbnail   String?
+  isPublished Boolean  @default(false) @map("is_published")
+  sortOrder   Int      @default(0) @map("sort_order")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  center   Center    @relation(fields: [centerId], references: [id], onDelete: Cascade)
+  subjects Subject[]
+  batchAssignments BatchCourse[]
+
+  @@index([centerId])
+  @@map("courses")
+}
+
+model BatchCourse {
+  id       String @id @default(cuid())
+  batchId  String @map("batch_id")
+  courseId String @map("course_id")
+
+  batch  Batch  @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  course Course @relation(fields: [courseId], references: [id], onDelete: Cascade)
+
+  @@unique([batchId, courseId])
+  @@map("batch_courses")
+}
+
+model Subject {
+  id        String   @id @default(cuid())
+  courseId  String   @map("course_id")
+  title     String
+  sortOrder Int      @default(0) @map("sort_order")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  course   Course    @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  chapters Chapter[]
+
+  @@index([courseId])
+  @@map("subjects")
+}
+
+model Chapter {
+  id        String   @id @default(cuid())
+  subjectId String   @map("subject_id")
+  title     String
+  sortOrder Int      @default(0) @map("sort_order")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  subject Subject @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+  videos  Video[]
+  notes   Note[]
+
+  @@index([subjectId])
+  @@map("chapters")
+}
+
+// ─── YouTube content (center-scoped) ─────────────────────────────────────────
+
+model YoutubeChannel {
+  id          String   @id @default(cuid())
+  centerId    String   @map("center_id")
+  channelId   String   @map("channel_id")
+  title       String
+  description String?
+  thumbnail   String?
+  isActive    Boolean  @default(true) @map("is_active")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+  lastSyncedAt DateTime? @map("last_synced_at")
+
+  center    Center           @relation(fields: [centerId], references: [id], onDelete: Cascade)
+  playlists YoutubePlaylist[]
+  batches   BatchYoutubeChannel[]
+
+  @@unique([centerId, channelId])
+  @@index([centerId])
+  @@map("youtube_channels")
+}
+
+model BatchYoutubeChannel {
+  batchId          String   @map("batch_id")
+  youtubeChannelId String   @map("youtube_channel_id")
+
+  batch            Batch          @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  youtubeChannel   YoutubeChannel @relation(fields: [youtubeChannelId], references: [id], onDelete: Cascade)
+
+  @@id([batchId, youtubeChannelId])
+  @@map("batch_youtube_channels")
+}
+
+model YoutubePlaylist {
+  id         String   @id @default(cuid())
+  channelId  String   @map("channel_id")
+  playlistId String   @map("playlist_id")
+  title      String
+  description String?
+  thumbnail  String?
+  isActive   Boolean  @default(true) @map("is_active")
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  channel YoutubeChannel @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  videos  Video[]
+
+  @@unique([channelId, playlistId])
+  @@map("youtube_playlists")
+}
+
+model Video {
+  id          String   @id @default(cuid())
+  chapterId   String?  @map("chapter_id")
+  playlistId  String?  @map("playlist_id")
+  youtubeId   String   @map("youtube_id")
+  title       String
+  description String?
+  duration    Int?
+  isShort     Boolean  @default(false) @map("is_short")
+  sortOrder   Int      @default(0) @map("sort_order")
+  isActive    Boolean  @default(true) @map("is_active")
+  publishedAt DateTime? @map("published_at")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  chapter  Chapter?         @relation(fields: [chapterId], references: [id], onDelete: SetNull)
+  playlist YoutubePlaylist? @relation(fields: [playlistId], references: [id], onDelete: SetNull)
+  progress StudentProgress[]
+  likes    VideoLike[]
+
+  @@index([chapterId])
+  @@index([playlistId])
+  @@map("videos")
+}
+
+model VideoLike {
+  id           String   @id @default(cuid())
+  membershipId String   @map("membership_id")
+  videoId      String   @map("video_id")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  membership   CenterMembership @relation(fields: [membershipId], references: [id], onDelete: Cascade)
+  video        Video            @relation(fields: [videoId], references: [id], onDelete: Cascade)
+
+  @@unique([membershipId, videoId])
+  @@map("video_likes")
+}
+
+// ─── Notes / materials (center-scoped) ─────────────────────────────────────────
+
+model Note {
+  id          String      @id @default(cuid())
+  centerId    String      @map("center_id")
+  chapterId   String?     @map("chapter_id")
+  title       String
+  description String?
+  fileUrl     String      @map("file_url")
+  fileName    String      @map("file_name")
+  fileSize    Int?        @map("file_size")
+  contentType ContentType @map("content_type")
+  isPublished Boolean     @default(false) @map("is_published")
+  createdAt   DateTime    @default(now()) @map("created_at")
+  updatedAt   DateTime    @updatedAt @map("updated_at")
+
+  center  Center   @relation(fields: [centerId], references: [id], onDelete: Cascade)
+  chapter Chapter? @relation(fields: [chapterId], references: [id], onDelete: SetNull)
+
+  @@index([centerId])
+  @@map("notes")
+}
+
+// ─── Tests (center-scoped) ─────────────────────────────────────────────────────
+
+model Test {
+  id               String   @id @default(cuid())
+  centerId         String   @map("center_id")
+  title            String
+  description      String?
+  durationMinutes  Int      @map("duration_minutes")
+  totalMarks       Int      @map("total_marks")
+  passingMarks     Int      @map("passing_marks")
+  negativeMarking  Float    @default(0) @map("negative_marking")
+  shuffleQuestions Boolean  @default(false) @map("shuffle_questions")
+  isPublished      Boolean  @default(false) @map("is_published")
+  availableFrom    DateTime? @map("available_from")
+  availableUntil   DateTime? @map("available_until")
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @updatedAt @map("updated_at")
+
+  center    Center     @relation(fields: [centerId], references: [id], onDelete: Cascade)
+  questions Question[]
+  results   TestResult[]
+
+  @@index([centerId])
+  @@map("tests")
+}
+
+model Question {
+  id            String       @id @default(cuid())
+  testId        String       @map("test_id")
+  type          QuestionType @default(MCQ)
+  text          String
+  marks         Int          @default(1)
+  sortOrder     Int          @default(0) @map("sort_order")
+  createdAt     DateTime     @default(now()) @map("created_at")
+  updatedAt     DateTime     @updatedAt @map("updated_at")
+
+  test    Test     @relation(fields: [testId], references: [id], onDelete: Cascade)
+  options Answer[]
+
+  @@index([testId])
+  @@map("questions")
+}
+
+model Answer {
+  id         String  @id @default(cuid())
+  questionId String  @map("question_id")
+  text       String
+  isCorrect  Boolean @default(false) @map("is_correct")
+  sortOrder  Int     @default(0) @map("sort_order")
+
+  question Question @relation(fields: [questionId], references: [id], onDelete: Cascade)
+
+  @@index([questionId])
+  @@map("answers")
+}
+
+model TestResult {
+  id           String   @id @default(cuid())
+  testId       String   @map("test_id")
+  membershipId String   @map("membership_id")
+  score        Float
+  totalMarks   Int      @map("total_marks")
+  percentage   Float
+  passed       Boolean
+  timeTakenSec Int?     @map("time_taken_sec")
+  submittedAt  DateTime @default(now()) @map("submitted_at")
+
+  test       Test             @relation(fields: [testId], references: [id], onDelete: Cascade)
+  membership CenterMembership @relation(fields: [membershipId], references: [id], onDelete: Cascade)
+
+  @@index([testId])
+  @@index([membershipId])
+  @@map("test_results")
+}
+
+// ─── Progress tracking ─────────────────────────────────────────────────────────
+
+model StudentProgress {
+  id             String   @id @default(cuid())
+  membershipId   String   @map("membership_id")
+  videoId        String   @map("video_id")
+  completed      Boolean  @default(false)
+  watchTimeSec   Int      @default(0) @map("watch_time_sec")
+  completionPct  Float    @default(0) @map("completion_pct")
+  lastViewedAt   DateTime @default(now()) @map("last_viewed_at")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  membership CenterMembership @relation(fields: [membershipId], references: [id], onDelete: Cascade)
+  video      Video            @relation(fields: [videoId], references: [id], onDelete: Cascade)
+
+  @@unique([membershipId, videoId])
+  @@map("student_progress")
+}
+
+// ─── Activity logs ─────────────────────────────────────────────────────────────
+
+model ActivityLog {
+  id        String   @id @default(cuid())
+  centerId  String?  @map("center_id")
+  userId    String?  @map("user_id")
+  action    String
+  entity    String?
+  entityId  String?  @map("entity_id")
+  metadata  Json?
+  createdAt DateTime @default(now()) @map("created_at")
+
+  center Center? @relation(fields: [centerId], references: [id], onDelete: SetNull)
+  user   User?   @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([centerId])
+  @@index([userId])
+  @@map("activity_logs")
+}
+
+model CenterMedia {
+  id        String   @id @default(cuid())
+  centerId  String   @map("center_id")
+  fileName  String   @map("file_name")
+  fileId    String   @map("file_id")
+  fileUrl   String   @map("file_url")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  center    Center   @relation(fields: [centerId], references: [id], onDelete: Cascade)
+
+  @@index([centerId])
+  @@map("center_media")
+}
