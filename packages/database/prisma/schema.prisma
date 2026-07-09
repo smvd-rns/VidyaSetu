@@ -181,6 +181,7 @@ model CenterMembership {
   studentProgress  StudentProgress[]
   testResults      TestResult[]
   videoLikes       VideoLike[]
+  playlistLikes    PlaylistLike[]
 
   @@unique([userId, centerId])
   @@index([centerId, role])
@@ -330,6 +331,7 @@ model YoutubePlaylist {
 
   channel YoutubeChannel @relation(fields: [channelId], references: [id], onDelete: Cascade)
   videos  Video[]
+  likes   PlaylistLike[]
 
   @@unique([channelId, playlistId])
   @@map("youtube_playlists")
@@ -371,6 +373,19 @@ model VideoLike {
 
   @@unique([membershipId, videoId])
   @@map("video_likes")
+}
+
+model PlaylistLike {
+  id           String   @id @default(cuid())
+  membershipId String   @map("membership_id")
+  playlistId   String   @map("playlist_id")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  membership   CenterMembership @relation(fields: [membershipId], references: [id], onDelete: Cascade)
+  playlist     YoutubePlaylist  @relation(fields: [playlistId], references: [id], onDelete: Cascade)
+
+  @@unique([membershipId, playlistId])
+  @@map("playlist_likes")
 }
 
 // ─── Notes / materials (center-scoped) ─────────────────────────────────────────

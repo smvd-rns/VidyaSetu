@@ -389,6 +389,18 @@ export class CentersController {
     return this.centersService.listVideos(centerId, user.id);
   }
 
+  @Get(':centerId/shorts')
+  @UseGuards(CenterAccessGuard)
+  @CenterIdParam('centerId')
+  @CenterRoles(CenterMemberRole.STUDENT, CenterMemberRole.STAFF, CenterMemberRole.TEACHER, CenterMemberRole.ADMIN)
+  listShorts(
+    @Param('centerId') centerId: string,
+    @CurrentUser() user: RequestUser,
+    @Query('limit') limit?: string,
+  ) {
+    return this.centersService.listShorts(centerId, user.id, limit ? parseInt(limit, 10) : 12);
+  }
+
   @Post(':centerId/videos/:videoId/like')
   @UseGuards(CenterAccessGuard)
   @CenterIdParam('centerId')
@@ -399,6 +411,29 @@ export class CentersController {
     @CurrentUser() user: RequestUser,
   ) {
     return this.centersService.toggleLikeVideo(centerId, videoId, user.id);
+  }
+
+  @Post(':centerId/playlists/:playlistId/like')
+  @UseGuards(CenterAccessGuard)
+  @CenterIdParam('centerId')
+  @CenterRoles(CenterMemberRole.STUDENT, CenterMemberRole.TEACHER, CenterMemberRole.STAFF, CenterMemberRole.ADMIN)
+  toggleLikePlaylist(
+    @Param('centerId') centerId: string,
+    @Param('playlistId') playlistId: string,
+    @CurrentUser() user: RequestUser,
+  ) {
+    return this.centersService.toggleLikePlaylist(centerId, playlistId, user.id);
+  }
+
+  @Get(':centerId/library')
+  @UseGuards(CenterAccessGuard)
+  @CenterIdParam('centerId')
+  @CenterRoles(CenterMemberRole.STUDENT, CenterMemberRole.TEACHER, CenterMemberRole.STAFF, CenterMemberRole.ADMIN)
+  getLibrary(
+    @Param('centerId') centerId: string,
+    @CurrentUser() user: RequestUser,
+  ) {
+    return this.centersService.getLibrary(centerId, user.id);
   }
 
   @Get(':centerId/youtube/channels')
@@ -419,8 +454,21 @@ export class CentersController {
   listChannelPlaylists(
     @Param('centerId') centerId: string,
     @Param('channelId') channelId: string,
+    @CurrentUser() user: RequestUser,
   ) {
-    return this.centersService.listChannelPlaylists(centerId, channelId);
+    return this.centersService.listChannelPlaylists(centerId, channelId, user.id);
+  }
+
+  @Get(':centerId/playlists/:playlistId/videos')
+  @UseGuards(CenterAccessGuard)
+  @CenterIdParam('centerId')
+  @CenterRoles(CenterMemberRole.STUDENT, CenterMemberRole.TEACHER, CenterMemberRole.STAFF, CenterMemberRole.ADMIN)
+  listPlaylistVideos(
+    @Param('centerId') centerId: string,
+    @Param('playlistId') playlistId: string,
+    @CurrentUser() user: RequestUser,
+  ) {
+    return this.centersService.listPlaylistVideos(centerId, playlistId, user.id);
   }
 
   @Post(':centerId/youtube/channels')

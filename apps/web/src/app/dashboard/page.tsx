@@ -38,6 +38,7 @@ interface Video {
   liked?: boolean;
   publishedAt?: string;
   createdAt: string;
+  playlist?: any;
 }
 interface Chapter { id: string; title: string; videos: Video[]; }
 interface Subject { id: string; title: string; chapters: Chapter[]; }
@@ -225,62 +226,253 @@ function YouTubePlayer({ videoId, title }: { videoId: string; title: string }) {
 }
 
 
-// ─── Videos Tab ───────────────────────────────────────────────────────────────
-function VideosTab({ centerId }: { centerId: string }) {
-  const [videos, setVideos] = useState<Video[]>([]);
+function VideosTab({ centerId, onBack }: { centerId: string; onBack: () => void }) {
+  const [shorts, setShorts] = useState<Video[]>([]);
   const [loading, setLoading] = useState(true);
-  const [selected, setSelected] = useState<Video | null>(null);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [activeIndex, setActiveIndex] = useState(0);
+  const [isPlaying, setIsPlaying] = useState(true);
 
-  useEffect(() => {
-    api<Video[]>(`/centers/${centerId}/videos`)
-      .then((data) => {
-        // Only show teacher uploaded videos that aren't tied to a youtube channel playlist
-        const teacherVids = data.filter((v) => !v.playlistId);
-        setVideos(teacherVids);
-        const f = teacherVids.find((v) => v.youtubeId);
-        if (f) setSelected(f);
-      })
-      .finally(() => setLoading(false));
+  const containerRef = useRef<HTMLDivElement>(null);
+  const activeIndexRef = useRef(0);
+  activeIndexRef.current = activeIndex;
+  const shortsLengthRef = useRef(0);
+  shortsLengthRef.current = shorts.length;
+
+  const fetchShorts = useCallback(async (append = false) => {
+    if (append) setLoadingMore(true);
+    else setLoading(true);
+
+    try {
+      const data = await api<Video[]>(`/centers/${centerId}/shorts?limit=12`);
+      setShorts((prev) => {
+        const existingIds = new Set(prev.map((item) => item.id));
+        const filtered = data.filter((item) => !existingIds.has(item.id));
+        return append ? [...prev, ...filtered] : data;
+      });
+    } catch (err) {
+      console.error('Error fetching shorts:', err);
+    } finally {
+      setLoading(false);
+      setLoadingMore(false);
+    }
   }, [centerId]);
 
-  if (loading) return <div className="text-teal-600 text-sm py-12 text-center animate-pulse font-semibold">Loading videos...</div>;
+  useEffect(() => {
+    fetchShorts();
+  }, [fetchShorts]);
 
-  const ytVideos = videos.filter((v) => v.youtubeId);
-  if (ytVideos.length === 0) return (
-    <div className="text-center py-20 bg-white/60 backdrop-blur-xl rounded-3xl border border-white/80 shadow-sm">
-      <span className="text-6xl">📺</span>
-      <p className="mt-4 text-slate-500 text-sm font-semibold">No videos have been added by your teacher yet.</p>
-    </div>
-  );
+  // Keyboard navigation
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        scrollToIndex(Math.min(activeIndex + 1, shorts.length - 1));
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        scrollToIndex(Math.max(activeIndex - 1, 0));
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [activeIndex, shorts.length]);
+
+  const scrollToIndex = (index: number) => {
+    const slide = containerRef.current?.querySelector(`[data-index="${index}"]`);
+    if (slide) slide.scrollIntoView({ behavior: 'smooth' });
+  };
+
+  const handleScroll = () => {
+    if (!containerRef.current) return;
+    const { scrollTop, clientHeight } = containerRef.current;
+    if (clientHeight === 0) return;
+    const newIndex = Math.round(scrollTop / clientHeight);
+    if (newIndex !== activeIndexRef.current && newIndex >= 0 && newIndex < shortsLengthRef.current) {
+      setActiveIndex(newIndex);
+    }
+  };
+
+  useEffect(() => {
+    if (shorts.length === 0) return;
+    setIsPlaying(true);
+
+    if (activeIndex >= shorts.length - 3 && !loadingMore) {
+      fetchShorts(true);
+    }
+  }, [activeIndex, shorts.length, loadingMore, fetchShorts]);
+
+  const togglePlay = () => {
+    const video = shorts[activeIndex];
+    if (!video?.youtubeId) return;
+
+    const iframe = document.getElementById(`yt-player-${video.youtubeId}`) as HTMLIFrameElement;
+    if (iframe?.contentWindow) {
+      const func = isPlaying ? 'pauseVideo' : 'playVideo';
+      iframe.contentWindow.postMessage(
+        JSON.stringify({ event: 'command', func, args: [] }),
+        '*'
+      );
+      setIsPlaying(!isPlaying);
+    }
+  };
+
+  const handleShare = (video: Video) => {
+    if (typeof navigator !== 'undefined' && navigator.share) {
+      navigator.share({
+        title: video.title,
+        url: `https://www.youtube.com/watch?v=${video.youtubeId}`,
+      }).catch(() => {});
+    } else {
+      navigator.clipboard.writeText(`https://www.youtube.com/watch?v=${video.youtubeId}`);
+      alert('Short video link copied to clipboard!');
+    }
+  };
+
+  const handleLike = async (video: Video) => {
+    try {
+      const updated = await api<{ liked: boolean; likesCount: number }>(
+        `/centers/${centerId}/videos/${video.id}/like`,
+        { method: 'POST' }
+      );
+      setShorts((prev) =>
+        prev.map((v) =>
+          v.id === video.id
+            ? { ...v, liked: updated.liked, likesCount: updated.likesCount }
+            : v
+        )
+      );
+    } catch (err) {
+      console.error('Failed to like video:', err);
+    }
+  };
+
+  if (loading && shorts.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center py-20 gap-3">
+        <div className="w-10 h-10 border-4 border-indigo-200 border-t-indigo-600 rounded-full animate-spin" />
+        <p className="text-sm text-slate-400 font-semibold">Loading short videos...</p>
+      </div>
+    );
+  }
+
+  if (shorts.length === 0) {
+    return (
+      <div className="text-center py-20 bg-white/60 backdrop-blur-xl rounded-3xl border border-white/80 shadow-sm">
+        <span className="text-6xl">📺</span>
+        <p className="mt-4 text-slate-500 text-sm font-semibold">No short videos have been assigned to your group yet.</p>
+      </div>
+    );
+  }
+
+  const origin = typeof window !== 'undefined' ? window.location.origin : '';
 
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-      <div className="lg:col-span-2">
-        {selected?.youtubeId ? <YouTubePlayer videoId={selected.youtubeId} title={selected.title} /> : (
-          <div className="rounded-3xl bg-white/60 backdrop-blur-xl border border-white/80 flex items-center justify-center h-64 text-slate-400 text-sm font-semibold">Select a video to play</div>
-        )}
-      </div>
-      <div className="space-y-2 max-h-[600px] overflow-y-auto pr-1">
-        <h3 className="text-xs font-black text-teal-600 uppercase tracking-widest mb-3">All Videos ({ytVideos.length})</h3>
-        {ytVideos.map((v) => (
-          <button key={v.id} onClick={() => setSelected(v)}
-            className={`w-full text-left p-3.5 rounded-2xl transition-all flex gap-3 items-start cursor-pointer ${
-              selected?.id === v.id
-                ? 'bg-gradient-to-r from-teal-50 to-emerald-50 border border-teal-200 shadow-md'
-                : 'bg-white/70 backdrop-blur-md border border-white/80 hover:border-teal-200 hover:shadow-md'
-            }`}
+    <div className="fixed top-16 bottom-16 md:bottom-0 left-0 md:left-56 lg:left-64 right-0 z-30 bg-slate-950 text-white overflow-hidden select-none flex items-center justify-center">
+      <div className="relative w-full h-full max-h-screen md:max-h-[85vh] aspect-[9/16] md:rounded-3xl overflow-hidden shadow-2xl bg-black border border-white/5">
+        <div
+          ref={containerRef}
+          onScroll={handleScroll}
+          className="h-full w-full overflow-y-scroll snap-y snap-mandatory select-none"
+          style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
+        >
+          {shorts.map((video, idx) => {
+            const isActive = idx === activeIndex;
+            const embedUrl = `https://www.youtube-nocookie.com/embed/${video.youtubeId}?autoplay=1&mute=0&playsinline=1&rel=0&modestbranding=1&enablejsapi=1&cc_load_policy=0&origin=${encodeURIComponent(origin)}`;
+
+            return (
+              <div
+                key={video.id}
+                data-index={idx}
+                className="relative w-full h-full snap-start snap-always flex items-center justify-center bg-black overflow-hidden"
+              >
+                {isActive ? (
+                  <iframe
+                    id={`yt-player-${video.youtubeId}`}
+                    src={embedUrl}
+                    title={video.title}
+                    className="w-full h-full border-none object-cover scale-[1.02]"
+                    allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                    allowFullScreen
+                  />
+                ) : (
+                  <div
+                    className="absolute inset-0 bg-cover bg-center filter blur-[2px]"
+                    style={{ backgroundImage: `url(https://i.ytimg.com/vi/${video.youtubeId}/mqdefault.jpg)` }}
+                  />
+                )}
+
+                {isActive && (
+                  <div onClick={togglePlay} className="absolute inset-0 cursor-pointer z-10 flex items-center justify-center bg-transparent">
+                    {!isPlaying && (
+                      <div className="p-4 rounded-full bg-black/60 text-white border border-white/10 animate-pulse shadow-xl">
+                        <span className="text-2xl">▶</span>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                <div className="absolute bottom-4 left-4 right-16 z-20 pointer-events-none text-white drop-shadow-md pr-2">
+                  {video.playlist?.channel?.title && (
+                    <span className="inline-block px-2.5 py-0.5 mb-2 text-[9px] font-black uppercase tracking-wider rounded-lg bg-indigo-600/90 backdrop-blur-sm text-white">
+                      {video.playlist.channel.title}
+                    </span>
+                  )}
+                  <h3 className="text-xs font-black leading-snug line-clamp-2">{video.title}</h3>
+                  {video.description && (
+                    <p className="text-[10px] opacity-75 font-semibold line-clamp-1 mt-1">{video.description}</p>
+                  )}
+                </div>
+
+                {isActive && (
+                  <div className="absolute right-3 bottom-8 z-30 flex flex-col items-center gap-4">
+                    <button
+                      onClick={() => handleLike(video)}
+                      className="flex flex-col items-center gap-1 group cursor-pointer"
+                    >
+                      <div className={`w-10 h-10 rounded-2xl flex items-center justify-center transition-all shadow-md backdrop-blur-md border ${
+                        video.liked
+                          ? 'bg-pink-500/80 border-pink-400 text-white'
+                          : 'bg-white/10 border-white/10 text-white hover:bg-white/20'
+                      }`}>
+                        <span className="text-lg">{video.liked ? '❤️' : '🤍'}</span>
+                      </div>
+                      <span className="text-[9px] font-black tracking-wider text-slate-300">
+                        {video.likesCount || 0}
+                      </span>
+                    </button>
+
+                    <button
+                      onClick={() => handleShare(video)}
+                      className="flex flex-col items-center gap-1 group cursor-pointer"
+                    >
+                      <div className="w-10 h-10 rounded-2xl bg-white/10 border border-white/10 backdrop-blur-md flex items-center justify-center hover:bg-white/20 text-white transition-all shadow-md">
+                        <span className="text-base">🔗</span>
+                      </div>
+                      <span className="text-[9px] font-black tracking-wider text-slate-300">Share</span>
+                    </button>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+
+        {activeIndex > 0 && (
+          <button
+            onClick={() => scrollToIndex(activeIndex - 1)}
+            className="absolute top-4 right-4 z-40 w-8 h-8 rounded-xl bg-white/10 border border-white/10 backdrop-blur-md flex items-center justify-center hover:bg-white/20 active:scale-90 transition-all text-white cursor-pointer"
           >
-            <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 shadow-sm ${
-              selected?.id === v.id ? 'bg-gradient-to-br from-teal-500 to-emerald-500' : 'bg-teal-100'
-            }`}>
-              <span className={`text-base font-bold ${selected?.id === v.id ? 'text-white' : 'text-teal-600'}`}>▶</span>
-            </div>
-            <div className="min-w-0">
-              <p className={`text-sm font-bold line-clamp-2 ${selected?.id === v.id ? 'text-teal-800' : 'text-slate-800'}`}>{v.title}</p>
-              {v.duration && <p className="text-[10px] text-slate-400 mt-1 font-semibold">{Math.floor(v.duration / 60)}:{String(v.duration % 60).padStart(2, '0')} min</p>}
-            </div>
+            <span>▲</span>
           </button>
-        ))}
+        )}
+        {activeIndex < shorts.length - 1 && (
+          <button
+            onClick={() => scrollToIndex(activeIndex + 1)}
+            className="absolute bottom-4 right-4 z-40 w-8 h-8 rounded-xl bg-white/10 border border-white/10 backdrop-blur-md flex items-center justify-center hover:bg-white/20 active:scale-90 transition-all text-white cursor-pointer"
+          >
+            <span>▼</span>
+          </button>
+        )}
       </div>
     </div>
   );
@@ -372,25 +564,60 @@ function YoutubeChannelsTab({ centerId, batchId }: { centerId: string; batchId?:
 
   useEffect(() => {
     const url = `/centers/${centerId}/youtube/channels${batchId ? `?batchId=${batchId}` : ''}`;
-    api<YoutubeChannel[]>(url).then((data) => setChannels(data)).finally(() => setLoading(false));
+    api<YoutubeChannel[]>(url).then((data) => {
+      const libraryChannel: YoutubeChannel = {
+        id: 'library',
+        centerId,
+        channelId: 'library',
+        title: 'Library',
+        description: 'Your saved videos and playlists.',
+        thumbnail: 'https://lh3.googleusercontent.com/d/1H29tehXjOh3SHbYljfyM2PiLwtzCBAWm?t=' + Date.now(),
+        isActive: true,
+        createdAt: new Date().toISOString()
+      };
+      setChannels([libraryChannel, ...data]);
+    }).finally(() => setLoading(false));
   }, [centerId, batchId]);
 
   useEffect(() => {
     if (!selectedChannel) { setVideos([]); setIsPlayingLive(false); return; }
-    api<Video[]>(`/centers/${centerId}/videos`).then((data) => {
-      const chanVids = data.filter((v) => v.playlistId);
-      setVideos(chanVids);
-      const currentVideoId = searchParams.get('ytVideoId');
-      if (!currentVideoId && chanVids.length > 0) {
-        const params = new URLSearchParams(searchParams.toString());
-        params.set('ytVideoId', chanVids[0].youtubeId || chanVids[0].id);
-        router.replace(`${pathname}?${params.toString()}`, { scroll: false });
-      }
-    });
-  }, [centerId, selectedChannel, searchParams, router, pathname]);
+    if (selectedPlaylist) {
+      api<Video[]>(`/centers/${centerId}/playlists/${selectedPlaylist.id}/videos`).then((data) => {
+        setVideos(data);
+        const currentVideoId = searchParams.get('ytVideoId');
+        if (!currentVideoId && data.length > 0) {
+          const params = new URLSearchParams(searchParams.toString());
+          params.set('ytVideoId', data[0].youtubeId || data[0].id);
+          router.replace(`${pathname}?${params.toString()}`, { scroll: false });
+        }
+      });
+    } else if (selectedChannel.id === 'library') {
+      api<{ videos: Video[], playlists: any[] }>(`/centers/${centerId}/library`).then((data) => {
+        setVideos(data.videos);
+        setPlaylists(data.playlists);
+        const currentVideoId = searchParams.get('ytVideoId');
+        if (!currentVideoId && data.videos.length > 0) {
+          const params = new URLSearchParams(searchParams.toString());
+          params.set('ytVideoId', data.videos[0].youtubeId || data.videos[0].id);
+          router.replace(`${pathname}?${params.toString()}`, { scroll: false });
+        }
+      });
+    } else {
+      api<Video[]>(`/centers/${centerId}/videos`).then((data) => {
+        const chanVids = data.filter((v) => v.playlistId && v.playlist?.channelId === selectedChannel.id);
+        setVideos(chanVids);
+        const currentVideoId = searchParams.get('ytVideoId');
+        if (!currentVideoId && chanVids.length > 0) {
+          const params = new URLSearchParams(searchParams.toString());
+          params.set('ytVideoId', chanVids[0].youtubeId || chanVids[0].id);
+          router.replace(`${pathname}?${params.toString()}`, { scroll: false });
+        }
+      });
+    }
+  }, [centerId, selectedChannel, selectedPlaylist, searchParams, router, pathname]);
 
   useEffect(() => {
-    if (!selectedChannel || subTab !== 'playlists') return;
+    if (!selectedChannel || selectedChannel.id === 'library' || subTab !== 'playlists') return;
     setLoadingPlaylists(true);
     api<any[]>(`/centers/${centerId}/youtube/channels/${selectedChannel.channelId}/playlists`)
       .then((data) => setPlaylists(data))
@@ -401,8 +628,26 @@ function YoutubeChannelsTab({ centerId, batchId }: { centerId: string; batchId?:
   const handleToggleLike = async (video: Video) => {
     try {
       const res = await api<{ liked: boolean; likesCount: number }>(`/centers/${centerId}/videos/${video.id}/like`, { method: 'POST' });
-      setVideos((prev) => prev.map((v) => v.id === video.id ? { ...v, liked: res.liked, likesCount: res.likesCount } : v));
+      setVideos((prev) => {
+        if (selectedChannel?.id === 'library' && !res.liked) {
+          return prev.filter((v) => v.id !== video.id);
+        }
+        return prev.map((v) => v.id === video.id ? { ...v, liked: res.liked, likesCount: res.likesCount } : v);
+      });
     } catch (err) { console.error('Failed to like video:', err); }
+  };
+
+  const handleToggleSavePlaylist = async (e: React.MouseEvent, playlist: any) => {
+    e.stopPropagation();
+    try {
+      const res = await api<{ liked: boolean }>(`/centers/${centerId}/playlists/${playlist.id}/like`, { method: 'POST' });
+      setPlaylists((prev) => {
+        if (selectedChannel?.id === 'library' && !res.liked) {
+          return prev.filter((p) => p.id !== playlist.id);
+        }
+        return prev.map((p) => p.id === playlist.id ? { ...p, liked: res.liked } : p);
+      });
+    } catch (err) { console.error('Failed to save playlist:', err); }
   };
 
   const handleShareVideo = (video: Video) => {
@@ -593,6 +838,63 @@ function YoutubeChannelsTab({ centerId, batchId }: { centerId: string; batchId?:
           )}
         </div>
       </div>
+      {/* ── Active Video Player Section ── */}
+      {(selectedVideo || isPlayingLive) ? (
+        <div id="video-player-section" className="space-y-3 scroll-mt-20">
+          {isPlayingLive ? (
+            <div style={{ width: '100%', aspectRatio: '16/9', background: '#000', borderRadius: '1rem', position: 'relative', overflow: 'hidden' }}>
+              <iframe
+                style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', border: 'none' }}
+                src={`https://www.youtube-nocookie.com/embed/live_stream?channel=${selectedChannel.channelId}&autoplay=1&rel=0&playsinline=1&controls=1&fs=1`}
+                title={`Live – ${selectedChannel.title}`}
+                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; fullscreen"
+                allowFullScreen
+              />
+            </div>
+          ) : selectedVideo?.youtubeId ? (
+            <YouTubePlayer key={selectedVideo.youtubeId} videoId={selectedVideo.youtubeId} title={selectedVideo.title} />
+          ) : null}
+
+          <div className="bg-white rounded-2xl border border-slate-100 p-4 space-y-3 shadow-sm">
+            <h2 className="font-black text-slate-900 text-base sm:text-lg leading-snug">
+              {isPlayingLive ? `🔴 Live – ${selectedChannel.title}` : selectedVideo?.title}
+            </h2>
+            <div className="flex flex-wrap items-center gap-2 text-[10px] font-black text-slate-500">
+              {isPlayingLive ? (
+                <span className="flex items-center gap-1 text-red-500 animate-pulse"><span className="w-2 h-2 rounded-full bg-red-600 inline-block"></span>LIVE NOW</span>
+              ) : (
+                <>
+                  <span>🕐 {formatRelativeTime(selectedVideo?.publishedAt)}</span>
+                  <span className="text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded-lg border border-indigo-100">📹 VIDEOS</span>
+                </>
+              )}
+            </div>
+            {!isPlayingLive && selectedVideo && (
+              <div className="flex items-center gap-2 pt-1">
+                <button onClick={() => window.open(`https://www.youtube.com/watch?v=${selectedVideo.youtubeId}`, '_blank')} className="w-9 h-9 rounded-xl bg-red-600 hover:bg-red-700 flex items-center justify-center text-white shadow-md transition cursor-pointer text-base" title="Open on YouTube">▶</button>
+                <button onClick={() => handleToggleLike(selectedVideo)} className={`w-9 h-9 rounded-xl border flex items-center justify-center text-base transition cursor-pointer ${selectedVideo.liked ? 'bg-pink-50 border-pink-200 text-pink-600' : 'bg-white border-slate-200 text-slate-400 hover:text-pink-500'}`} title="Like">{selectedVideo.liked ? '❤️' : '🤍'}</button>
+                <button onClick={() => handleShareVideo(selectedVideo)} className="w-9 h-9 rounded-xl bg-white border border-slate-200 flex items-center justify-center text-slate-400 hover:text-indigo-600 text-base transition cursor-pointer" title="Share">🔗</button>
+              </div>
+            )}
+            {!isPlayingLive && selectedVideo?.description && (
+              <div className="bg-slate-50/80 rounded-xl p-3 border border-slate-100">
+                <p className="text-[10px] font-black text-slate-400 uppercase tracking-wider mb-1.5">Description</p>
+                <p className="text-xs text-slate-600 leading-relaxed">
+                  {descExpanded || selectedVideo.description.length <= 150 ? selectedVideo.description : `${selectedVideo.description.substring(0, 150)}...`}
+                </p>
+                {selectedVideo.description.length > 150 && (
+                  <button onClick={() => setDescExpanded(!descExpanded)} className="text-[10px] font-black text-indigo-600 mt-1.5 cursor-pointer hover:text-indigo-800">{descExpanded ? 'Show Less' : 'Show More'}</button>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      ) : (
+        <div className="text-center py-10 bg-white/60 backdrop-blur-xl rounded-2xl border border-white/80">
+          <span className="text-4xl">▶</span>
+          <p className="mt-3 text-slate-500 text-sm font-semibold">Select a video below to start watching</p>
+        </div>
+      )}
 
       {/* ── Sub tabs + Search ── */}
       <div className="bg-white/70 backdrop-blur-xl rounded-2xl border border-white/80 shadow-sm overflow-hidden">
@@ -638,62 +940,6 @@ function YoutubeChannelsTab({ centerId, batchId }: { centerId: string; batchId?:
       {/* ── VIDEOS TAB ── */}
       {subTab === 'videos' && (
         <div className="space-y-4">
-          {(selectedVideo || isPlayingLive) ? (
-            <div id="video-player-section" className="space-y-3 scroll-mt-20">
-              {isPlayingLive ? (
-                <div style={{ width: '100%', aspectRatio: '16/9', background: '#000', borderRadius: '1rem', position: 'relative', overflow: 'hidden' }}>
-                  <iframe
-                    style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', border: 'none' }}
-                    src={`https://www.youtube-nocookie.com/embed/live_stream?channel=${selectedChannel.channelId}&autoplay=1&rel=0&playsinline=1&controls=1&fs=1`}
-                    title={`Live – ${selectedChannel.title}`}
-                    allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; fullscreen"
-                    allowFullScreen
-                  />
-                </div>
-              ) : selectedVideo?.youtubeId ? (
-                <YouTubePlayer key={selectedVideo.youtubeId} videoId={selectedVideo.youtubeId} title={selectedVideo.title} />
-              ) : null}
-
-              <div className="bg-white rounded-2xl border border-slate-100 p-4 space-y-3 shadow-sm">
-                <h2 className="font-black text-slate-900 text-base sm:text-lg leading-snug">
-                  {isPlayingLive ? `🔴 Live – ${selectedChannel.title}` : selectedVideo?.title}
-                </h2>
-                <div className="flex flex-wrap items-center gap-2 text-[10px] font-black text-slate-500">
-                  {isPlayingLive ? (
-                    <span className="flex items-center gap-1 text-red-500 animate-pulse"><span className="w-2 h-2 rounded-full bg-red-600 inline-block"></span>LIVE NOW</span>
-                  ) : (
-                    <>
-                      <span>🕐 {formatRelativeTime(selectedVideo?.publishedAt)}</span>
-                      <span className="text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded-lg border border-indigo-100">📹 VIDEOS</span>
-                    </>
-                  )}
-                </div>
-                {!isPlayingLive && selectedVideo && (
-                  <div className="flex items-center gap-2 pt-1">
-                    <button onClick={() => window.open(`https://www.youtube.com/watch?v=${selectedVideo.youtubeId}`, '_blank')} className="w-9 h-9 rounded-xl bg-red-600 hover:bg-red-700 flex items-center justify-center text-white shadow-md transition cursor-pointer text-base" title="Open on YouTube">▶</button>
-                    <button onClick={() => handleToggleLike(selectedVideo)} className={`w-9 h-9 rounded-xl border flex items-center justify-center text-base transition cursor-pointer ${selectedVideo.liked ? 'bg-pink-50 border-pink-200 text-pink-600' : 'bg-white border-slate-200 text-slate-400 hover:text-pink-500'}`} title="Like">{selectedVideo.liked ? '❤️' : '🤍'}</button>
-                    <button onClick={() => handleShareVideo(selectedVideo)} className="w-9 h-9 rounded-xl bg-white border border-slate-200 flex items-center justify-center text-slate-400 hover:text-indigo-600 text-base transition cursor-pointer" title="Share">🔗</button>
-                  </div>
-                )}
-                {!isPlayingLive && selectedVideo?.description && (
-                  <div className="bg-slate-50/80 rounded-xl p-3 border border-slate-100">
-                    <p className="text-[10px] font-black text-slate-400 uppercase tracking-wider mb-1.5">Description</p>
-                    <p className="text-xs text-slate-600 leading-relaxed">
-                      {descExpanded || selectedVideo.description.length <= 150 ? selectedVideo.description : `${selectedVideo.description.substring(0, 150)}...`}
-                    </p>
-                    {selectedVideo.description.length > 150 && (
-                      <button onClick={() => setDescExpanded(!descExpanded)} className="text-[10px] font-black text-indigo-600 mt-1.5 cursor-pointer hover:text-indigo-800">{descExpanded ? 'Show Less' : 'Show More'}</button>
-                    )}
-                  </div>
-                )}
-              </div>
-            </div>
-          ) : (
-            <div className="text-center py-10 bg-white/60 backdrop-blur-xl rounded-2xl border border-white/80">
-              <span className="text-4xl">▶</span>
-              <p className="mt-3 text-slate-500 text-sm font-semibold">Select a video below to start watching</p>
-            </div>
-          )}
           <div className="space-y-2.5">
             <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest px-1">
               {selectedPlaylist ? `📁 ${selectedPlaylist.title}` : 'All Videos'} — {filteredVideos.length} items
@@ -760,13 +1006,13 @@ function YoutubeChannelsTab({ centerId, batchId }: { centerId: string; batchId?:
             </div>
           ) : playlists.length === 0 ? (
             <div className="text-center py-20 bg-white/60 backdrop-blur-xl rounded-3xl border border-white/80">
-              <span className="text-5xl">📁</span>
+<p className="text-5xl">📁</p>
               <p className="mt-4 text-slate-500 text-sm font-semibold">No playlists found for this channel.</p>
             </div>
           ) : (
             <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
               {playlists.map((pl) => {
-                const sampleVid = videos.find((v) => v.playlistId === pl.id);
+                const sampleVid = (pl.videos && pl.videos.length > 0) ? pl.videos[0] : videos.find((v) => v.playlistId === pl.id);
                 return (
                   <div
                     key={pl.id}
@@ -785,8 +1031,21 @@ function YoutubeChannelsTab({ centerId, batchId }: { centerId: string; batchId?:
                       {sampleVid ? (
                         <img src={`https://i.ytimg.com/vi/${sampleVid.youtubeId}/mqdefault.jpg`} alt={pl.title} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300" />
                       ) : <span className="text-3xl">📁</span>}
+                      
+                      <button
+                        onClick={(e) => handleToggleSavePlaylist(e, pl)}
+                        className={`absolute top-2 left-2 z-10 w-8 h-8 rounded-xl flex items-center justify-center backdrop-blur-md shadow-md border transition cursor-pointer ${
+                          pl.liked
+                            ? 'bg-amber-500/90 border-amber-400 text-white'
+                            : 'bg-white/40 border-white/40 text-slate-800 hover:bg-white/60'
+                        }`}
+                        title={pl.liked ? 'Saved to Library' : 'Save Playlist'}
+                      >
+                        <span className="text-sm">{pl.liked ? '★' : '☆'}</span>
+                      </button>
+
                       <div className="absolute right-0 top-0 bottom-0 w-1/3 bg-black/75 backdrop-blur-sm flex flex-col items-center justify-center text-white">
-                        <span className="text-lg font-black">{pl._count?.videos || 0}</span>
+                        <span className="text-lg font-black">{pl._count?.videos !== undefined ? pl._count.videos : (pl.videosCount || 0)}</span>
                         <span className="text-[9px] font-black uppercase tracking-widest">Videos</span>
                       </div>
                     </div>
@@ -1051,10 +1310,9 @@ function EditProfileTab({ user, onProfileUpdated }: { user: User; onProfileUpdat
   );
 }
 
-// ─── Sidebar Navigation ────────────────────────────────────────────────────────
 const NAV_TABS = [
-  { id: 'videos',   label: 'Videos',           icon: '📺', color: 'from-teal-500 to-emerald-500',   bg: 'bg-teal-50',   text: 'text-teal-700',   border: 'border-teal-200'   },
   { id: 'youtube',  label: 'YouTube Channels', icon: '📡', color: 'from-red-500 to-rose-500',       bg: 'bg-red-50',    text: 'text-red-700',    border: 'border-red-200'    },
+  { id: 'videos',   label: 'Shorts',           icon: '📺', color: 'from-teal-500 to-emerald-500',   bg: 'bg-teal-50',   text: 'text-teal-700',   border: 'border-teal-200'   },
   { id: 'profile',  label: 'Edit Profile',     icon: '👤', color: 'from-violet-500 to-indigo-500',  bg: 'bg-violet-50', text: 'text-violet-700', border: 'border-violet-200' },
 ];
 
@@ -1082,7 +1340,7 @@ function DashboardContent() {
   const [loading, setLoading] = useState(true);
   const [selectedCenterId, setSelectedCenterId] = useState<string>('');
 
-  const activeTab = searchParams.get('tab') || 'videos';
+  const activeTab = searchParams.get('tab') || 'youtube';
   const setActiveTab = (tabId: string) => {
     const params = new URLSearchParams(searchParams.toString());
     params.set('tab', tabId);
@@ -1236,7 +1494,7 @@ function DashboardContent() {
           </div>
 
           {/* Tab Content */}
-          {activeTab === 'videos'   && <VideosTab centerId={centerId} />}
+          {activeTab === 'videos'   && <VideosTab centerId={centerId} onBack={() => setActiveTab('youtube')} />}
           {activeTab === 'youtube'  && (
             <YoutubeChannelsTab
               centerId={centerId}

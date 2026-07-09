@@ -828,7 +828,26 @@ export class CentersService {
   async listVideos(centerId: string, userId?: string) {
     await this.ensureCenterActive(centerId);
 
-    const cacheKey = `youtube:videos:${centerId}`;
+    let isStudent = false;
+    let batchIds: string[] = [];
+    let membershipId: string | undefined;
+
+    if (userId) {
+      const membership = await this.prisma.centerMembership.findUnique({
+        where: { userId_centerId: { userId, centerId } },
+        include: { batchMemberships: true },
+      });
+      if (membership) {
+        membershipId = membership.id;
+        isStudent = membership.role === 'STUDENT';
+        batchIds = membership.batchMemberships.map((bm) => bm.batchId);
+      }
+    }
+
+    const cacheKey = isStudent
+      ? `youtube:videos:${centerId}:student:${userId}`
+      : `youtube:videos:${centerId}:staff`;
+
     const cached = await this.redis.get<any[]>(cacheKey);
     let videos: any[];
 
@@ -838,13 +857,48 @@ export class CentersService {
       const dbVideos = await this.prisma.video.findMany({
         where: {
           OR: [
-            { chapter: { subject: { course: { centerId } } } },
-            { playlist: { channel: { centerId } } }
+            // Chapter Videos
+            {
+              chapter: {
+                subject: {
+                  course: {
+                    centerId,
+                    ...(isStudent ? {
+                      batchAssignments: {
+                        some: {
+                          batchId: { in: batchIds }
+                        }
+                      }
+                    } : {})
+                  }
+                }
+              }
+            },
+            // YouTube Channel Videos
+            {
+              playlist: {
+                channel: {
+                  centerId,
+                  ...(isStudent ? {
+                    batches: {
+                      some: {
+                        batchId: { in: batchIds }
+                      }
+                    }
+                  } : {})
+                }
+              }
+            }
           ]
         },
         include: {
           _count: {
             select: { likes: true }
+          },
+          playlist: {
+            include: {
+              channel: true
+            }
           }
         },
         orderBy: [
@@ -861,24 +915,134 @@ export class CentersService {
         };
       });
 
-      await this.redis.set(cacheKey, videos, 21600); // 6 hours
+      await this.redis.set(cacheKey, videos, 600); // 10 minutes cache
     }
 
     let likedVideoIds = new Set<string>();
-    if (userId) {
-      const membership = await this.prisma.centerMembership.findUnique({
-        where: { userId_centerId: { userId, centerId } }
+    if (membershipId) {
+      const userLikes = await this.prisma.videoLike.findMany({
+        where: { membershipId },
+        select: { videoId: true }
       });
-      if (membership) {
-        const userLikes = await this.prisma.videoLike.findMany({
-          where: { membershipId: membership.id },
-          select: { videoId: true }
-        });
-        likedVideoIds = new Set(userLikes.map(l => l.videoId));
-      }
+      likedVideoIds = new Set(userLikes.map(l => l.videoId));
     }
 
     return videos.map(v => ({
+      ...v,
+      liked: likedVideoIds.has(v.id)
+    }));
+  }
+
+  async listShorts(centerId: string, userId: string, limit = 12) {
+    await this.ensureCenterActive(centerId);
+
+    const membership = await this.prisma.centerMembership.findUnique({
+      where: { userId_centerId: { userId, centerId } },
+      include: { batchMemberships: true },
+    });
+
+    if (!membership) throw new NotFoundException('Membership not found.');
+
+    const isStudent = membership.role === 'STUDENT';
+    const batchIds = membership.batchMemberships.map((bm) => bm.batchId);
+
+    const dbVideos = await this.prisma.video.findMany({
+      where: {
+        isShort: true,
+        OR: [
+          // Chapter Videos
+          {
+            chapter: {
+              subject: {
+                course: {
+                  centerId,
+                  ...(isStudent ? {
+                    batchAssignments: {
+                      some: {
+                        batchId: { in: batchIds }
+                      }
+                    }
+                  } : {})
+                }
+              }
+            }
+          },
+          // YouTube Channel Videos
+          {
+            playlist: {
+              channel: {
+                centerId,
+                ...(isStudent ? {
+                  batches: {
+                    some: {
+                      batchId: { in: batchIds }
+                    }
+                  }
+                } : {})
+              }
+            }
+          }
+        ]
+      },
+      include: {
+        _count: {
+          select: { likes: true }
+        },
+        playlist: {
+          include: {
+            channel: true,
+          },
+        },
+      },
+    });
+
+    const videos = dbVideos.map((v) => {
+      const { _count, ...rest } = v as any;
+      return {
+        ...rest,
+        likesCount: _count?.likes || 0,
+      };
+    });
+
+    // Balanced randomized selection (like Safe-YT)
+    const channelMap = new Map<string, any[]>();
+    for (const v of videos) {
+      const channelId = v.playlist?.channelId || 'teacher-uploaded';
+      if (!channelMap.has(channelId)) {
+        channelMap.set(channelId, []);
+      }
+      channelMap.get(channelId)!.push(v);
+    }
+
+    // Shuffle within each channel
+    for (const [key, list] of channelMap.entries()) {
+      channelMap.set(key, list.sort(() => Math.random() - 0.5));
+    }
+
+    // Interleave
+    const interleaved: any[] = [];
+    const channelsList = Array.from(channelMap.keys()).sort(() => Math.random() - 0.5);
+    const maxLen = Math.max(0, ...Array.from(channelMap.values()).map(r => r.length));
+
+    for (let i = 0; i < maxLen && interleaved.length < limit; i++) {
+      for (const channelId of channelsList) {
+        const list = channelMap.get(channelId)!;
+        if (i < list.length && interleaved.length < limit) {
+          interleaved.push(list[i]);
+        }
+      }
+    }
+
+    // Final shuffle
+    const finalShorts = interleaved.sort(() => Math.random() - 0.5);
+
+    const userLikes = await this.prisma.videoLike.findMany({
+      where: { membershipId: membership.id },
+      select: { videoId: true }
+    });
+    const likedVideoIds = new Set(userLikes.map(l => l.videoId));
+
+    return finalShorts.map(v => ({
       ...v,
       liked: likedVideoIds.has(v.id)
     }));
@@ -916,6 +1080,8 @@ export class CentersService {
     }
 
     await this.redis.del(`youtube:videos:${centerId}`);
+    await this.redis.del(`youtube:videos:${centerId}:student:${userId}`);
+    await this.redis.del(`youtube:videos:${centerId}:staff`);
 
     const count = await this.prisma.videoLike.count({
       where: { videoId }
@@ -924,6 +1090,105 @@ export class CentersService {
     return {
       liked: !existing,
       likesCount: count,
+    };
+  }
+
+  async toggleLikePlaylist(centerId: string, playlistId: string, userId: string) {
+    await this.ensureCenterActive(centerId);
+    
+    const membership = await this.prisma.centerMembership.findUnique({
+      where: { userId_centerId: { userId, centerId } }
+    });
+    if (!membership) throw new NotFoundException('Membership not found.');
+    const membershipId = membership.id;
+
+    const existing = await this.prisma.playlistLike.findUnique({
+      where: {
+        membershipId_playlistId: {
+          membershipId,
+          playlistId,
+        }
+      }
+    });
+
+    if (existing) {
+      await this.prisma.playlistLike.delete({
+        where: { id: existing.id }
+      });
+    } else {
+      await this.prisma.playlistLike.create({
+        data: {
+          membershipId,
+          playlistId,
+        }
+      });
+    }
+
+    await this.redis.del(`youtube:playlists:${centerId}`);
+
+    return {
+      liked: !existing
+    };
+  }
+
+  async getLibrary(centerId: string, userId: string) {
+    await this.ensureCenterActive(centerId);
+
+    const membership = await this.prisma.centerMembership.findUnique({
+      where: { userId_centerId: { userId, centerId } },
+      include: {
+        videoLikes: {
+          include: {
+            video: {
+              include: {
+                playlist: {
+                  include: {
+                    channel: true
+                  }
+                }
+              }
+            }
+          }
+        },
+        playlistLikes: {
+          include: {
+            playlist: {
+              include: {
+                channel: true,
+                videos: {
+                  take: 1
+                },
+                _count: {
+                  select: { videos: true }
+                }
+              }
+            }
+          }
+        }
+      }
+    });
+
+    if (!membership) throw new NotFoundException('Membership not found.');
+
+    const likedVideos = membership.videoLikes.map(vl => {
+      return {
+        ...vl.video,
+        liked: true,
+        likesCount: 1
+      };
+    });
+
+    const savedPlaylists = membership.playlistLikes.map(pl => {
+      return {
+        ...pl.playlist,
+        liked: true,
+        videosCount: pl.playlist._count?.videos || 0
+      };
+    });
+
+    return {
+      videos: likedVideos,
+      playlists: savedPlaylists
     };
   }
   // ─── YouTube Channels ──────────────────────────────────────────────────────
@@ -970,14 +1235,14 @@ export class CentersService {
     });
   }
 
-  async listChannelPlaylists(centerId: string, channelId: string) {
+  async listChannelPlaylists(centerId: string, channelId: string, userId?: string) {
     await this.ensureCenterActive(centerId);
     const channel = await this.prisma.youtubeChannel.findUnique({
       where: { centerId_channelId: { centerId, channelId } },
     });
     if (!channel) throw new NotFoundException('YouTube channel not found.');
 
-    return this.prisma.youtubePlaylist.findMany({
+    const playlists = await this.prisma.youtubePlaylist.findMany({
       where: { channelId: channel.id },
       include: {
         _count: {
@@ -985,6 +1250,79 @@ export class CentersService {
         }
       }
     });
+
+    let likedPlaylistIds = new Set<string>();
+    if (userId) {
+      const membership = await this.prisma.centerMembership.findUnique({
+        where: { userId_centerId: { userId, centerId } }
+      });
+      if (membership) {
+        const userLikes = await this.prisma.playlistLike.findMany({
+          where: { membershipId: membership.id },
+          select: { playlistId: true }
+        });
+        likedPlaylistIds = new Set(userLikes.map(l => l.playlistId));
+      }
+    }
+
+    return playlists.map(p => ({
+      ...p,
+      liked: likedPlaylistIds.has(p.id)
+    }));
+  }
+
+  async listPlaylistVideos(centerId: string, playlistId: string, userId?: string) {
+    await this.ensureCenterActive(centerId);
+
+    const playlist = await this.prisma.youtubePlaylist.findUnique({
+      where: { id: playlistId }
+    });
+    if (!playlist) throw new NotFoundException('Playlist not found.');
+
+    const dbVideos = await this.prisma.video.findMany({
+      where: { playlistId: playlist.id },
+      include: {
+        _count: {
+          select: { likes: true }
+        },
+        playlist: {
+          include: {
+            channel: true
+          }
+        }
+      },
+      orderBy: [
+        { publishedAt: 'desc' },
+        { createdAt: 'desc' }
+      ]
+    });
+
+    const videos = dbVideos.map((v) => {
+      const { _count, ...rest } = v as any;
+      return {
+        ...rest,
+        likesCount: _count?.likes || 0,
+      };
+    });
+
+    let likedVideoIds = new Set<string>();
+    if (userId) {
+      const membership = await this.prisma.centerMembership.findUnique({
+        where: { userId_centerId: { userId, centerId } }
+      });
+      if (membership) {
+        const userLikes = await this.prisma.videoLike.findMany({
+          where: { membershipId: membership.id },
+          select: { videoId: true }
+        });
+        likedVideoIds = new Set(userLikes.map(l => l.videoId));
+      }
+    }
+
+    return videos.map(v => ({
+      ...v,
+      liked: likedVideoIds.has(v.id)
+    }));
   }
 
   async createYoutubeChannel(centerId: string, dto: CreateYoutubeChannelDto) {
@@ -1020,10 +1358,6 @@ export class CentersService {
       }
     }
 
-    // Trigger initial background sync immediately on link/edit
-    this.syncYoutubeChannelVideos(centerId, dto.channelId).catch((err) => {
-      console.error(`Initial channel sync failed for ${dto.channelId}:`, err);
-    });
 
     await this.redis.del(`youtube:videos:${centerId}`);
     return created;
