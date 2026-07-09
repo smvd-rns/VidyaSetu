@@ -55,6 +55,8 @@ interface YoutubeChannel {
   playlistsCount?: number;
   videosCount?: number;
   batchIds?: string[];
+  centerId?: string;
+  createdAt?: string;
 }
 
 function formatRelativeTime(dateString?: string) {
