@@ -6,7 +6,7 @@ services:
     name: vidyasetu-api
     runtime: node
     plan: free
-    buildCommand: npm install && npm run build:packages && npm run build -w @vidyasetu/api
+    buildCommand: npm install --include=dev && npm run build:packages && npm run build -w @vidyasetu/api && npm prune --production
     startCommand: npm run start -w @vidyasetu/api
     envVars:
       - key: NODE_ENV
