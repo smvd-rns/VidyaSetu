@@ -49,6 +49,41 @@ function RegisterForm() {
   const activeCodeRef = useRef('');
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // Prefill join parameters from URL on load
+  useEffect(() => {
+    const codeParam = searchParams.get('code');
+    const batchParam = searchParams.get('batch');
+    if (codeParam) {
+      const upperCode = codeParam.toUpperCase();
+      setJoinCode(upperCode);
+      activeCodeRef.current = upperCode;
+      setVerifyingCode(true);
+      api<CenterLookupResult>(`/centers/by-code/${upperCode}`)
+        .then((centerData) => {
+          setVerifiedCenter(centerData);
+          if (batchParam) {
+            const matched = centerData.batches.find(
+              (b) => b.id === batchParam || b.name.toLowerCase() === batchParam.toLowerCase()
+            );
+            if (matched) {
+              setSelectedBatchId(matched.id);
+            } else if (centerData.batches.length > 0) {
+              setSelectedBatchId(centerData.batches[0].id);
+            }
+          } else if (centerData.batches.length > 0) {
+            setSelectedBatchId(centerData.batches[0].id);
+          }
+          setVerifyingCode(false);
+        })
+        .catch(() => {
+          setVerifiedCenter(null);
+          setSelectedBatchId('');
+          setCodeError('Center not found.');
+          setVerifyingCode(false);
+        });
+    }
+  }, [searchParams]);
+
   // Auto-verify code when user changes the input (debounced 400ms)
   function handleVerifyCode(codeVal: string) {
     const upperVal = codeVal.toUpperCase();

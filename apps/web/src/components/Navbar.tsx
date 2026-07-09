@@ -8,8 +8,8 @@ interface NavbarProps {
 
 export function Navbar({ variant = 'public', onLogout }: NavbarProps) {
   return (
-    <header className="border-b border-border/80 bg-white/95 backdrop-blur-sm sticky top-0 z-50">
-      <div className="mx-auto flex max-w-5xl items-center justify-between px-4 py-4">
+    <header className="border-b border-border/80 bg-white/95 backdrop-blur-sm sticky top-0 z-50 safe-top">
+      <div className="mx-auto flex max-w-5xl items-center justify-between px-4 py-3">
         <Logo size="sm" />
         <nav className="flex items-center gap-3 text-sm">
           {variant === 'public' ? (

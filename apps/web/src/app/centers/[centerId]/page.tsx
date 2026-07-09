@@ -1,12 +1,22 @@
 'use client';
 
-import { useEffect, useRef, useState, Suspense } from 'react';
+import { useEffect, useRef, useState, Suspense, FormEvent } from 'react';
 import { useRouter, useParams, useSearchParams, usePathname } from 'next/navigation';
 import Link from 'next/link';
 import { getMe } from '@/lib/auth';
 import { api } from '@/lib/api';
 import { Navbar } from '@/components/Navbar';
 import { Card, PageShell, FormField } from '@/components/ui';
+
+interface User {
+  id: string;
+  firstName: string;
+  lastName: string;
+  email: string;
+  phone?: string;
+  globalRole: string;
+  centerMemberships: any[];
+}
 
 interface CenterDetails {
   id: string;
@@ -50,6 +60,10 @@ function CenterContent() {
   // Members search & filters
   const [memberSearchQuery, setMemberSearchQuery] = useState('');
   const [batchStudentSearchQuery, setBatchStudentSearchQuery] = useState('');
+  const [studentsCurrentPage, setStudentsCurrentPage] = useState(1);
+  const [studentsPerPage, setStudentsPerPage] = useState(10);
+  const [membersCurrentPage, setMembersCurrentPage] = useState(1);
+  const [membersPerPage, setMembersPerPage] = useState(10);
   const [memberRoleFilter, setMemberRoleFilter] = useState('');
   const [memberBatchFilter, setMemberBatchFilter] = useState('');
   
@@ -69,6 +83,11 @@ function CenterContent() {
     setManageBatchId(searchParams.get('manageBatch'));
     setManageTestId(searchParams.get('manageTest'));
   }, [searchParams]);
+
+  // Reset member directory pagination on filter change
+  useEffect(() => {
+    setMembersCurrentPage(1);
+  }, [memberSearchQuery, memberRoleFilter, memberBatchFilter]);
 
   const setActiveTab = (tabId: string) => {
     setActiveTabState(tabId);
@@ -100,6 +119,12 @@ function CenterContent() {
   const [testMarks, setTestMarks] = useState(100);
   const [testPassing, setTestPassing] = useState(40);
   const [customCode, setCustomCode] = useState('');
+  const [showInviteForm, setShowInviteForm] = useState(false);
+  const [selectedPendingIds, setSelectedPendingIds] = useState<string[]>([]);
+  const [bulkProcessing, setBulkProcessing] = useState(false);
+  const [showCreateBatchForm, setShowCreateBatchForm] = useState(false);
+  const [showLinkYtForm, setShowLinkYtForm] = useState(false);
+  const [showYtHelpGuide, setShowYtHelpGuide] = useState(false);
 
   // Custom builders state (URL backed)
   const selectedManageCourse = courses.find((c) => c.id === manageCourseId) || null;
@@ -443,9 +468,72 @@ function CenterContent() {
             method: 'DELETE',
           });
           showBanner('Student registration rejected.', 'success');
+          setSelectedPendingIds(prev => prev.filter(id => id !== membershipId));
           fetchPendingMembers();
         } catch {
           showBanner('Failed to reject registration.', 'error');
+        }
+      }
+    );
+  }
+
+  async function handleBulkApprove() {
+    if (selectedPendingIds.length === 0 || bulkProcessing) return;
+    setBulkProcessing(true);
+    try {
+      const results = await Promise.allSettled(
+        selectedPendingIds.map((id) =>
+          api(`/centers/${centerId}/members/${id}/approve`, { method: 'PATCH' })
+        )
+      );
+      const succeeded = results.filter((r) => r.status === 'fulfilled').length;
+      const failed = results.length - succeeded;
+      
+      if (succeeded > 0) {
+        showBanner(`Successfully approved ${succeeded} student registrations!`, 'success');
+      }
+      if (failed > 0) {
+        showBanner(`Failed to approve ${failed} registrations.`, 'error');
+      }
+      
+      setSelectedPendingIds([]);
+      fetchPendingMembers();
+      fetchMembers();
+    } catch {
+      showBanner('Failed to run bulk approval.', 'error');
+    } finally {
+      setBulkProcessing(false);
+    }
+  }
+
+  async function handleBulkReject() {
+    if (selectedPendingIds.length === 0 || bulkProcessing) return;
+    triggerConfirm(
+      `Are you sure you want to reject all ${selectedPendingIds.length} selected pending student registrations?`,
+      async () => {
+        setBulkProcessing(true);
+        try {
+          const results = await Promise.allSettled(
+            selectedPendingIds.map((id) =>
+              api(`/centers/${centerId}/members/${id}`, { method: 'DELETE' })
+            )
+          );
+          const succeeded = results.filter((r) => r.status === 'fulfilled').length;
+          const failed = results.length - succeeded;
+          
+          if (succeeded > 0) {
+            showBanner(`Successfully rejected ${succeeded} student registrations.`, 'success');
+          }
+          if (failed > 0) {
+            showBanner(`Failed to reject ${failed} registrations.`, 'error');
+          }
+          
+          setSelectedPendingIds([]);
+          fetchPendingMembers();
+        } catch {
+          showBanner('Failed to run bulk rejection.', 'error');
+        } finally {
+          setBulkProcessing(false);
         }
       }
     );
@@ -464,6 +552,7 @@ function CenterContent() {
       });
       setBatchName('');
       setBatchDesc('');
+      setShowCreateBatchForm(false);
       showBanner('Classroom group created successfully!', 'success');
       fetchBatches();
     } catch (err: any) {
@@ -730,6 +819,7 @@ function CenterContent() {
       setYtChanThumb('');
       setYtSelectedBatchIds([]);
       setEditingChannelId(null);
+      setShowLinkYtForm(false);
       showBanner(isEditing ? 'YouTube channel updated!' : 'YouTube channel linked!', 'success');
       fetchYoutubeChannels();
     } catch (err: any) {
@@ -840,6 +930,7 @@ function CenterContent() {
     setYtChanDesc(chan.description || '');
     setYtChanThumb(chan.thumbnail || '');
     setYtSelectedBatchIds(chan.batchIds || []);
+    setShowLinkYtForm(true);
   }
 
   function cancelEditYoutubeChannel() {
@@ -849,6 +940,7 @@ function CenterContent() {
     setYtChanDesc('');
     setYtChanThumb('');
     setYtSelectedBatchIds([]);
+    setShowLinkYtForm(false);
   }
 
   // Join Code actions
@@ -944,7 +1036,7 @@ function CenterContent() {
   const renderAsAdmin = isAdmin && !previewMode;
 
   return (
-    <div className="flex flex-1 flex-col bg-gradient-to-br from-indigo-100 via-purple-100 to-fuchsia-100 min-h-screen relative">
+    <div className="flex flex-1 flex-col bg-gradient-to-br from-indigo-100 via-purple-100 to-fuchsia-100 min-h-screen relative pb-16 md:pb-0">
       <Navbar variant="app" onLogout={() => router.push('/dashboard')} />
 
       <PageShell maxWidth="full">
@@ -1133,33 +1225,10 @@ function CenterContent() {
             <h1 className="font-sans text-3xl font-black tracking-tight text-indigo-950 mt-1.5 drop-shadow-sm">{center.name}</h1>
             <div className="flex items-center gap-2 mt-2">
               <p className="text-xs font-bold text-indigo-900/60 capitalize">Role: <span className="font-black text-indigo-900">{role.toLowerCase()}</span></p>
-              {isAdmin && (
-                <span className="text-indigo-900/20">|</span>
-              )}
-              {isAdmin && (
-                <span className={`text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full border shadow-sm ${
-                  previewMode ? 'bg-amber-50 text-amber-700 border-amber-200' : 'bg-violet-50 text-violet-700 border-violet-200'
-                }`}>
-                  {previewMode ? 'Student View Preview' : 'Management Mode'}
-                </span>
-              )}
             </div>
           </div>
 
           <div className="flex items-center gap-3">
-            {isAdmin && renderAsAdmin && (
-              <button
-                onClick={() => {
-                  setPreviewMode(!previewMode);
-                  setSelectedCourse(null);
-                  setActiveVideo(null);
-                  setActiveTest(null);
-                }}
-                className="rounded-xl px-4 py-2 text-xs font-black uppercase tracking-wider transition shadow-md border border-white cursor-pointer active:scale-95 bg-white/80 backdrop-blur-md text-indigo-950 hover:bg-white/90"
-              >
-                👁️ Switch to Student View
-              </button>
-            )}
             {isAdmin && (
               <div className="bg-emerald-55 border border-emerald-200 text-emerald-700 text-xs font-black px-3 py-2 rounded-xl uppercase tracking-wider shadow-sm">
                 Subscription: {center.subscriptionStatus}
@@ -1171,42 +1240,97 @@ function CenterContent() {
         {/* Dynamic layout for Admin Panel vs. Student Portal */}
         {renderAsAdmin ? (
           <div className="flex flex-col md:flex-row gap-6 lg:gap-8 items-start">
-            {/* Left Sidebar Navigation */}
-            <div className="w-full md:w-64 lg:w-72 shrink-0 bg-white/70 backdrop-blur-xl rounded-3xl border border-white shadow-[0_8px_30px_rgb(0,0,0,0.06)] p-3 lg:p-4 space-y-1.5 relative overflow-hidden">
-              <div className="absolute top-0 right-0 -mr-16 -mt-16 w-32 h-32 rounded-full bg-gradient-to-br from-indigo-300/40 to-purple-300/40 blur-3xl pointer-events-none"></div>
-              <p className="text-[10px] font-black text-indigo-950/40 uppercase tracking-widest px-3 mb-3 mt-1">Navigation</p>
-              {[
-                { id: 'overview', label: 'Overview', icon: '📊' },
-                { id: 'members', label: 'Students & Faculty', icon: '👥' },
-                { id: 'pending', label: 'Pending Approvals', count: pendingMembers.length, icon: '🔑' },
-                { id: 'batches', label: 'Batches / Standards', icon: '🏫' },
-                { id: 'youtube', label: 'YouTube channels', icon: '🎥' },
-              ].map((t) => (
-                <button
-                  key={t.id}
-                  onClick={() => {
-                    setActiveTab(t.id);
-                    setSelectedManageCourse(null);
-                    setSelectedManageBatch(null);
-                    setSelectedManageTest(null);
-                    cancelEditYoutubeChannel();
-                  }}
-                  className={`w-full flex items-center justify-start gap-3 px-4 py-3.5 rounded-2xl text-sm font-black transition-all duration-300 cursor-pointer border border-transparent ${
-                    activeTab === t.id
-                      ? 'bg-gradient-to-r from-indigo-500 to-purple-600 text-white shadow-lg shadow-indigo-500/25 border-indigo-400/20'
-                      : 'text-slate-600 hover:text-indigo-950 hover:bg-white/80 hover:shadow-sm hover:border-white'
-                  }`}
-                >
-                  <span className={`text-xl shrink-0 transition-transform duration-300 ${activeTab === t.id ? 'scale-110 drop-shadow-md' : 'grayscale-[50%]'}`}>{t.icon}</span>
-                  <span className="text-left leading-tight whitespace-normal">{t.label}</span>
-                  {t.count !== undefined && t.count > 0 && (
-                    <span className={`ml-auto text-[10px] font-extrabold px-2.5 py-0.5 rounded-full shadow-sm ${activeTab === t.id ? 'bg-white/20 text-white' : 'bg-rose-100 text-rose-700'}`}>
-                      {t.count}
-                    </span>
-                  )}
-                </button>
-              ))}
+          {/* ── Mobile Dropdown Nav (visible only on small screens) ── */}
+          <div className="md:hidden w-full mb-4">
+            <div className="bg-white/80 backdrop-blur-xl rounded-2xl border border-white shadow-[0_4px_20px_rgb(0,0,0,0.06)] p-3 relative">
+              <p className="text-[10px] font-black text-indigo-950/40 uppercase tracking-widest mb-2 px-1">
+                Navigation
+              </p>
+              <div className="relative">
+                {/* Custom styled select wrapper */}
+                <div className="flex items-center bg-gradient-to-r from-indigo-500 to-purple-600 rounded-xl px-4 py-3 shadow-lg gap-3 cursor-pointer">
+                  <span className="text-xl shrink-0">
+                    {[
+                      { id: 'overview', icon: '📊' },
+                      { id: 'members', icon: '👥' },
+                      { id: 'pending', icon: '🔑' },
+                      { id: 'batches', icon: '🏫' },
+                      { id: 'youtube', icon: '🎥' },
+                      { id: 'profile', icon: '👤' },
+                    ].find((t) => t.id === activeTab)?.icon ?? '📊'}
+                  </span>
+                  <select
+                    value={activeTab}
+                    onChange={(e) => {
+                      setActiveTab(e.target.value);
+                      setSelectedManageCourse(null);
+                      setSelectedManageBatch(null);
+                      setSelectedManageTest(null);
+                      cancelEditYoutubeChannel();
+                    }}
+                    className="flex-1 bg-transparent text-white font-black text-sm appearance-none outline-none cursor-pointer"
+                    style={{ WebkitAppearance: 'none' }}
+                  >
+                    <option value="overview"  className="text-slate-900 bg-white">📊  Overview</option>
+                    <option value="members"   className="text-slate-900 bg-white">👥  Students &amp; Faculty</option>
+                    <option value="pending"   className="text-slate-900 bg-white">🔑  Pending Approvals {pendingMembers.length > 0 ? `(${pendingMembers.length})` : ''}</option>
+                    <option value="batches"   className="text-slate-900 bg-white">🏫  Batches / Standards</option>
+                    <option value="youtube"   className="text-slate-900 bg-white">🎥  YouTube Channels</option>
+                    <option value="profile"   className="text-slate-900 bg-white">👤  Edit Profile</option>
+                  </select>
+                  {/* Chevron */}
+                  <svg className="w-4 h-4 text-white shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M19 9l-7 7-7-7" />
+                  </svg>
+                </div>
+
+                {/* Pending badge */}
+                {pendingMembers.length > 0 && activeTab !== 'pending' && (
+                  <span className="absolute -top-2 -right-2 bg-rose-500 text-white text-[9px] font-black px-2 py-0.5 rounded-full shadow-md">
+                    {pendingMembers.length}
+                  </span>
+                )}
+              </div>
             </div>
+          </div>
+
+          {/* ── Desktop / Tablet Sidebar (hidden on mobile) ── */}
+          <div className="hidden md:block w-full md:w-64 lg:w-72 shrink-0 bg-white/70 backdrop-blur-xl rounded-3xl border border-white shadow-[0_8px_30px_rgb(0,0,0,0.06)] p-3 lg:p-4 space-y-1.5 relative overflow-hidden">
+            <div className="absolute top-0 right-0 -mr-16 -mt-16 w-32 h-32 rounded-full bg-gradient-to-br from-indigo-300/40 to-purple-300/40 blur-3xl pointer-events-none"></div>
+            <p className="text-[10px] font-black text-indigo-950/40 uppercase tracking-widest px-3 mb-3 mt-1">Navigation</p>
+            {[
+              { id: 'overview', label: 'Overview', icon: '📊' },
+              { id: 'members', label: 'Students & Faculty', icon: '👥' },
+              { id: 'pending', label: 'Pending Approvals', count: pendingMembers.length, icon: '🔑' },
+              { id: 'batches', label: 'Batches / Standards', icon: '🏫' },
+              { id: 'youtube', label: 'YouTube channels', icon: '🎥' },
+              { id: 'profile', label: 'Edit Profile', icon: '👤' },
+            ].map((t) => (
+              <button
+                key={t.id}
+                onClick={() => {
+                  setActiveTab(t.id);
+                  setSelectedManageCourse(null);
+                  setSelectedManageBatch(null);
+                  setSelectedManageTest(null);
+                  cancelEditYoutubeChannel();
+                }}
+                className={`w-full flex items-center justify-start gap-3 px-4 py-3.5 rounded-2xl text-sm font-black transition-all duration-300 cursor-pointer border border-transparent ${
+                  activeTab === t.id
+                    ? 'bg-gradient-to-r from-indigo-500 to-purple-600 text-white shadow-lg shadow-indigo-500/25 border-indigo-400/20'
+                    : 'text-slate-600 hover:text-indigo-950 hover:bg-white/80 hover:shadow-sm hover:border-white'
+                }`}
+              >
+                <span className={`text-xl shrink-0 transition-transform duration-300 ${activeTab === t.id ? 'scale-110 drop-shadow-md' : 'grayscale-[50%]'}`}>{t.icon}</span>
+                <span className="text-left leading-tight whitespace-normal">{t.label}</span>
+                {t.count !== undefined && t.count > 0 && (
+                  <span className={`ml-auto text-[10px] font-extrabold px-2.5 py-0.5 rounded-full shadow-sm ${activeTab === t.id ? 'bg-white/20 text-white' : 'bg-rose-100 text-rose-700'}`}>
+                    {t.count}
+                  </span>
+                )}
+              </button>
+            ))}
+          </div>
 
             {/* Right Side: Tab Contents */}
             <div className="flex-1 min-w-0 w-full">
@@ -1219,72 +1343,96 @@ function CenterContent() {
                 <div className="space-y-6 lg:space-y-8 animate-in fade-in duration-500">
                   {/* Tab: Overview */}
                   {activeTab === 'overview' && (
-              <div className="space-y-6 lg:space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
-                <div className="grid gap-4 sm:grid-cols-2 lg:gap-6">
-                  <div className="rounded-3xl border border-white bg-gradient-to-br from-indigo-50/80 to-white p-6 shadow-[0_8px_30px_rgb(0,0,0,0.04)] relative overflow-hidden group hover:shadow-xl transition-all duration-300">
-                    <div className="absolute -top-4 -right-4 p-4 opacity-[0.03] transform group-hover:scale-110 group-hover:rotate-6 transition-all duration-500 text-8xl pointer-events-none">👥</div>
+              <div className="space-y-4 lg:space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
+
+                {/* Stats Row — always 2 columns */}
+                <div className="grid grid-cols-2 gap-3 lg:gap-5">
+                  <div className="rounded-2xl border border-white bg-gradient-to-br from-indigo-50/80 to-white p-4 lg:p-6 shadow-[0_4px_20px_rgb(0,0,0,0.04)] relative overflow-hidden group hover:shadow-lg transition-all duration-300">
+                    <div className="absolute -top-3 -right-3 opacity-[0.04] text-6xl lg:text-8xl pointer-events-none select-none group-hover:scale-110 transition-transform duration-500">👥</div>
                     <div className="relative z-10">
-                      <p className="text-5xl font-black text-indigo-950 mb-2 drop-shadow-sm">{center._count.memberships}</p>
-                      <p className="text-xs font-extrabold text-indigo-900/50 uppercase tracking-widest">Total Members</p>
+                      <p className="text-3xl lg:text-5xl font-black text-indigo-950 drop-shadow-sm">{center._count.memberships}</p>
+                      <p className="text-[10px] lg:text-xs font-extrabold text-indigo-900/50 uppercase tracking-widest mt-1">Total Members</p>
                     </div>
                   </div>
-                  <div className="rounded-3xl border border-white bg-gradient-to-br from-purple-50/80 to-white p-6 shadow-[0_8px_30px_rgb(0,0,0,0.04)] relative overflow-hidden group hover:shadow-xl transition-all duration-300">
-                    <div className="absolute -top-4 -right-4 p-4 opacity-[0.03] transform group-hover:scale-110 group-hover:-rotate-6 transition-all duration-500 text-8xl pointer-events-none">🏫</div>
+                  <div className="rounded-2xl border border-white bg-gradient-to-br from-purple-50/80 to-white p-4 lg:p-6 shadow-[0_4px_20px_rgb(0,0,0,0.04)] relative overflow-hidden group hover:shadow-lg transition-all duration-300">
+                    <div className="absolute -top-3 -right-3 opacity-[0.04] text-6xl lg:text-8xl pointer-events-none select-none group-hover:scale-110 transition-transform duration-500">🏫</div>
                     <div className="relative z-10">
-                      <p className="text-5xl font-black text-purple-950 mb-2 drop-shadow-sm">{center._count.batches}</p>
-                      <p className="text-xs font-extrabold text-purple-900/50 uppercase tracking-widest">Academic Batches</p>
+                      <p className="text-3xl lg:text-5xl font-black text-purple-950 drop-shadow-sm">{center._count.batches}</p>
+                      <p className="text-[10px] lg:text-xs font-extrabold text-purple-900/50 uppercase tracking-widest mt-1">Academic Batches</p>
                     </div>
                   </div>
                 </div>
 
                 {/* Join Code Card */}
-                <div className="rounded-3xl border border-white bg-white/70 backdrop-blur-xl p-6 lg:p-8 shadow-[0_8px_30px_rgb(0,0,0,0.06)] relative overflow-hidden">
-                  <div className="absolute top-0 right-0 w-64 h-64 bg-gradient-to-bl from-indigo-100/50 to-transparent rounded-bl-full pointer-events-none"></div>
-                  
+                <div className="rounded-2xl lg:rounded-3xl border border-white bg-white/70 backdrop-blur-xl p-4 lg:p-8 shadow-[0_8px_30px_rgb(0,0,0,0.06)] relative overflow-hidden">
+                  <div className="absolute top-0 right-0 w-48 h-48 bg-gradient-to-bl from-indigo-100/50 to-transparent rounded-bl-full pointer-events-none"></div>
                   <div className="relative z-10">
-                    <h3 className="font-sans text-xl font-black text-indigo-950 mb-2 flex flex-wrap items-center gap-3">
-                      <span className="text-2xl">🔑</span>
+                    <h3 className="font-sans text-base lg:text-xl font-black text-indigo-950 mb-1 flex flex-wrap items-center gap-2">
+                      <span className="text-xl">🔑</span>
                       <span>Center Join Code</span>
-                      <span className="text-[10px] font-extrabold bg-indigo-100 text-indigo-800 px-2.5 py-1 rounded-lg uppercase tracking-wider shadow-sm">Student Signups</span>
+                      <span className="text-[10px] font-extrabold bg-indigo-100 text-indigo-800 px-2 py-0.5 rounded-lg uppercase tracking-wider shadow-sm">Student Signups</span>
                     </h3>
-                    <p className="text-sm font-medium text-slate-500 mb-6 max-w-2xl leading-relaxed">
-                      Share this unique code with your students. When they enter it in their dashboard, they will automatically request approval to join this center.
+                    <p className="text-xs font-medium text-slate-500 mb-4 max-w-2xl leading-relaxed">
+                      Share this code with students to let them request to join this center.
                     </p>
 
-                    <div className="flex flex-wrap items-center gap-4 bg-slate-50/50 p-2 rounded-2xl border border-slate-100 inline-flex">
-                      <div className="bg-white border border-slate-200 shadow-sm rounded-xl px-5 py-2.5 font-mono font-extrabold text-2xl text-indigo-950 tracking-widest select-all">
+                    <div className="flex items-center gap-3">
+                      {/* Code display */}
+                      <div className="bg-white border border-slate-200 shadow-sm rounded-xl px-3 py-2 font-mono font-extrabold text-sm sm:text-base lg:text-2xl text-indigo-950 tracking-wider select-all whitespace-nowrap">
                         {center.joinCode || 'NO CODE SET'}
                       </div>
 
-                      <button
-                        onClick={handleRegenerateJoinCode}
-                        className="btn-outline text-xs px-4 py-2.5 bg-white shadow-sm hover:shadow-md transition-shadow rounded-xl font-bold flex items-center gap-2"
-                      >
-                        <span className="text-base">🔄</span> Regenerate
-                      </button>
-
-                      <div className="w-px h-8 bg-slate-200 mx-2 hidden sm:block"></div>
-
-                      <form onSubmit={handleSetCustomJoinCode} className="flex gap-2 items-center">
-                        <input
-                          type="text"
-                          placeholder="Custom Code"
-                          value={customCode}
-                          onChange={(e) => setCustomCode(e.target.value)}
-                          className="input-devotional text-sm py-2.5 w-40 uppercase font-bold bg-white shadow-sm rounded-xl border-slate-200 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 transition-all"
-                        />
-                        <button type="submit" className="btn-primary text-xs py-2.5 px-4 rounded-xl shadow-md hover:shadow-lg transition-all font-bold">
-                          Save
+                      {center.joinCode && (
+                        <button
+                          onClick={() => {
+                            const regUrl = `${window.location.origin}/register?code=${center.joinCode}`;
+                            navigator.clipboard.writeText(regUrl);
+                            showBanner('General Center registration link copied to clipboard!', 'success');
+                          }}
+                          className="btn-outline text-xs px-3 py-2 bg-gradient-to-r from-violet-50 to-indigo-50/50 text-indigo-700 shadow-sm hover:shadow-md border-indigo-200 transition-all rounded-xl font-bold flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+                        >
+                          <span>🔗</span> Share Link
                         </button>
-                      </form>
+                      )}
+
+                      {/* Controls: only show if no joinCode is set */}
+                      {!center.joinCode && (
+                        <>
+                          <button
+                            onClick={handleRegenerateJoinCode}
+                            className="btn-outline text-xs px-4 py-2.5 bg-white shadow-sm hover:shadow-md border-slate-200 transition-all rounded-xl font-bold flex items-center gap-2"
+                          >
+                            <span className="text-base">🔄</span> Generate
+                          </button>
+
+                          <div className="w-px h-7 bg-slate-200 hidden sm:block"></div>
+
+                          {/* Custom code input */}
+                          <form onSubmit={handleSetCustomJoinCode} className="flex gap-2 items-center">
+                            <input
+                              type="text"
+                              placeholder="Custom Code"
+                              value={customCode}
+                              onChange={(e) => setCustomCode(e.target.value)}
+                              className="input-devotional text-sm py-2 w-32 lg:w-40 uppercase font-bold bg-white shadow-sm rounded-xl border-slate-200 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 transition-all"
+                            />
+                            <button
+                              type="submit"
+                              className="btn-primary text-xs py-2 px-3 lg:px-4 rounded-xl shadow-md hover:shadow-lg transition-all font-bold"
+                            >
+                              Save
+                            </button>
+                          </form>
+                        </>
+                      )}
                     </div>
                   </div>
                 </div>
 
-                <div className="rounded-3xl border border-white bg-white/70 backdrop-blur-xl p-6 lg:p-8 shadow-[0_8px_30px_rgb(0,0,0,0.06)] relative overflow-hidden">
-                  <h3 className="font-sans text-xl font-black text-indigo-950 mb-2">College Console Settings</h3>
-                  <p className="text-sm font-medium text-slate-500 leading-relaxed max-w-3xl">
-                    Welcome to the central academic panel for <strong className="text-indigo-900">{center.name}</strong>. Use the navigation tabs on the left to manage center registrations, schedule online test modules, add study materials, and audit student engagement indexes.
+                <div className="rounded-2xl lg:rounded-3xl border border-white bg-white/70 backdrop-blur-xl p-4 lg:p-8 shadow-[0_8px_30px_rgb(0,0,0,0.06)] relative overflow-hidden">
+                  <h3 className="font-sans text-base lg:text-xl font-black text-indigo-950 mb-1">College Console Settings</h3>
+                  <p className="text-xs lg:text-sm font-medium text-slate-500 leading-relaxed max-w-3xl">
+                    Welcome to the central academic panel for <strong className="text-indigo-900">{center.name}</strong>. Use the navigation tabs to manage center registrations, schedule online test modules, add study materials, and audit student engagement.
                   </p>
                 </div>
               </div>
@@ -1292,51 +1440,135 @@ function CenterContent() {
 
             {/* Tab: Members */}
             {activeTab === 'members' && (
-              <div className="grid gap-6 md:grid-cols-3">
-                <div className="md:col-span-2 space-y-4">
-                  <h3 className="font-sans text-lg font-black text-indigo-950">Active Registrations</h3>
+              <div className="flex flex-col lg:flex-row gap-6 items-start">
+                <div className="flex-1 min-w-0 w-full space-y-4">
+                  <div className="flex items-center justify-between gap-4">
+                    <h3 className="font-sans text-base lg:text-lg font-black text-indigo-950">Active Registrations</h3>
+                    {/* Toggle button for Enroll form on mobile/tablet (always available) */}
+                    <button
+                      onClick={() => setShowInviteForm(!showInviteForm)}
+                      className={`text-xs px-3.5 py-2 rounded-xl font-bold transition-all duration-300 shadow-sm flex items-center gap-1.5 ${
+                        showInviteForm
+                          ? 'bg-rose-50 border border-rose-200 text-rose-600 hover:bg-rose-100'
+                          : 'bg-indigo-600 text-white hover:bg-indigo-700 hover:shadow-md'
+                      }`}
+                    >
+                      {showInviteForm ? 'Close Enrollment' : '➕ Enroll Member'}
+                    </button>
+                  </div>
+
+                  {/* Summary Count Cards */}
+                  <div className="grid grid-cols-3 gap-3">
+                    {/* Students Card */}
+                    <div className="bg-gradient-to-br from-indigo-50 to-white border border-indigo-100/50 rounded-2xl p-2.5 sm:p-3 text-center shadow-sm relative overflow-hidden">
+                      <p className="text-[10px] font-black text-indigo-900/60 uppercase tracking-wider">Students</p>
+                      <p className="font-sans text-lg sm:text-xl lg:text-2xl font-black text-indigo-950 mt-1">
+                        {members.filter(m => m.isApproved !== false && m.role === 'STUDENT').length}
+                      </p>
+                    </div>
+
+                    {/* Teachers Card */}
+                    <div className="bg-gradient-to-br from-emerald-50 to-white border border-emerald-100/50 rounded-2xl p-2.5 sm:p-3 text-center shadow-sm relative overflow-hidden">
+                      <p className="text-[10px] font-black text-emerald-900/60 uppercase tracking-wider">Teachers</p>
+                      <p className="font-sans text-lg sm:text-xl lg:text-2xl font-black text-indigo-950 mt-1">
+                        {members.filter(m => m.isApproved !== false && m.role === 'TEACHER').length}
+                      </p>
+                    </div>
+
+                    {/* Staff Card */}
+                    <div className="bg-gradient-to-br from-purple-50 to-white border border-purple-100/50 rounded-2xl p-2.5 sm:p-3 text-center shadow-sm relative overflow-hidden">
+                      <p className="text-[10px] font-black text-purple-900/60 uppercase tracking-wider">Staff</p>
+                      <p className="font-sans text-lg sm:text-xl lg:text-2xl font-black text-indigo-950 mt-1">
+                        {members.filter(m => m.isApproved !== false && (m.role === 'STAFF' || m.role === 'ADMIN')).length}
+                      </p>
+                    </div>
+                  </div>
                   
-                  {/* Filters Bar */}
-                  <div className="bg-gradient-to-br from-emerald-50/60 to-teal-50/40 backdrop-blur-xl p-4 rounded-3xl border border-white/80 shadow-[0_4px_20px_rgb(0,0,0,0.03)] flex flex-wrap gap-3 items-center relative overflow-hidden">
-                    <div className="absolute top-0 right-0 w-32 h-32 bg-gradient-to-bl from-emerald-100/30 to-transparent rounded-bl-full pointer-events-none"></div>
-                    <div className="relative z-10 flex-1 min-w-[200px] flex items-center bg-white rounded-2xl shadow-sm border border-emerald-100/50 px-3 overflow-hidden focus-within:ring-2 focus-within:ring-emerald-200 focus-within:border-emerald-300 transition-all">
-                      <span className="text-emerald-600/50 font-bold px-1">🔍</span>
+                  {/* Filters Bar — Compact & Responsive */}
+                  <div className="bg-gradient-to-br from-emerald-50/60 to-teal-50/40 backdrop-blur-xl p-3 lg:p-4 rounded-2xl lg:rounded-3xl border border-white/80 shadow-[0_4px_20px_rgb(0,0,0,0.03)] flex flex-col sm:flex-row gap-2 lg:gap-3 items-stretch sm:items-center relative overflow-hidden">
+                    <div className="absolute top-0 right-0 w-24 h-24 bg-gradient-to-bl from-emerald-100/30 to-transparent rounded-bl-full pointer-events-none"></div>
+                    
+                    <div className="relative z-10 flex-1 flex items-center bg-white rounded-xl shadow-sm border border-emerald-100/50 px-3 overflow-hidden focus-within:ring-2 focus-within:ring-emerald-250 focus-within:border-emerald-300 transition-all">
+                      <span className="text-emerald-600/50 font-bold">🔍</span>
                       <input
                         type="text"
                         placeholder="Search name or email..."
                         value={memberSearchQuery}
                         onChange={(e) => setMemberSearchQuery(e.target.value)}
-                        className="bg-transparent text-sm py-2.5 px-2 flex-1 text-emerald-950 font-bold focus:outline-none w-full"
+                        className="bg-transparent text-xs lg:text-sm py-2 px-1.5 flex-1 text-emerald-950 font-bold focus:outline-none w-full"
                       />
                     </div>
                     
-                    <select
-                      value={memberRoleFilter}
-                      onChange={(e) => setMemberRoleFilter(e.target.value)}
-                      className="bg-white border border-emerald-100/50 rounded-2xl text-xs py-3 px-4 text-emerald-950 font-bold focus:outline-none focus:ring-2 focus:ring-emerald-300 cursor-pointer shadow-sm relative z-10 appearance-none"
-                      style={{ backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='%23059669'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='M19 9l-7 7-7-7'%3E%3C/path%3E%3C/svg%3E")`, backgroundPosition: `right 0.75rem center`, backgroundRepeat: `no-repeat`, backgroundSize: `1em 1em`, paddingRight: `2.5rem` }}
-                    >
-                      <option value="">All Roles</option>
-                      <option value="STUDENT">Student</option>
-                      <option value="TEACHER">Teacher</option>
-                      <option value="STAFF">Staff</option>
-                      <option value="ADMIN">Admin</option>
-                    </select>
+                    <div className="flex gap-2 relative z-10">
+                      <select
+                        value={memberRoleFilter}
+                        onChange={(e) => setMemberRoleFilter(e.target.value)}
+                        className="flex-1 bg-white border border-emerald-100/50 rounded-xl text-xs py-2 px-3 text-emerald-950 font-bold focus:outline-none focus:ring-2 focus:ring-emerald-305 cursor-pointer shadow-sm appearance-none"
+                        style={{ backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='%23059669'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='M19 9l-7 7-7-7'%3E%3C/path%3E%3C/svg%3E")`, backgroundPosition: `right 0.6rem center`, backgroundRepeat: `no-repeat`, backgroundSize: `0.8em 0.8em`, paddingRight: `1.8rem` }}
+                      >
+                        <option value="">All Roles</option>
+                        <option value="STUDENT">Student</option>
+                        <option value="TEACHER">Teacher</option>
+                        <option value="STAFF">Staff</option>
+                        <option value="ADMIN">Admin</option>
+                      </select>
 
-                    <select
-                      value={memberBatchFilter}
-                      onChange={(e) => setMemberBatchFilter(e.target.value)}
-                      className="bg-white border border-emerald-100/50 rounded-2xl text-xs py-3 px-4 text-emerald-950 font-bold focus:outline-none focus:ring-2 focus:ring-emerald-300 cursor-pointer shadow-sm relative z-10 appearance-none"
-                      style={{ backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='%23059669'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='M19 9l-7 7-7-7'%3E%3C/path%3E%3C/svg%3E")`, backgroundPosition: `right 0.75rem center`, backgroundRepeat: `no-repeat`, backgroundSize: `1em 1em`, paddingRight: `2.5rem` }}
-                    >
-                      <option value="">All Groups</option>
-                      {batches.map((b) => (
-                        <option key={b.id} value={b.id}>{b.name}</option>
-                      ))}
-                    </select>
+                      <select
+                        value={memberBatchFilter}
+                        onChange={(e) => setMemberBatchFilter(e.target.value)}
+                        className="flex-1 bg-white border border-emerald-100/50 rounded-xl text-xs py-2 px-3 text-emerald-950 font-bold focus:outline-none focus:ring-2 focus:ring-emerald-305 cursor-pointer shadow-sm appearance-none"
+                        style={{ backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='%23059669'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='M19 9l-7 7-7-7'%3E%3C/path%3E%3C/svg%3E")`, backgroundPosition: `right 0.6rem center`, backgroundRepeat: `no-repeat`, backgroundSize: `0.8em 0.8em`, paddingRight: `1.8rem` }}
+                      >
+                        <option value="">All Groups</option>
+                        {batches.map((b) => (
+                          <option key={b.id} value={b.id}>{b.name}</option>
+                        ))}
+                      </select>
+                    </div>
                   </div>
 
-                  <div className="bg-white/80 backdrop-blur-xl rounded-3xl border border-white/60 shadow-[0_8px_30px_rgb(0,0,0,0.02)] divide-y divide-emerald-900/5 mt-6">
+                  {/* Enroll Form in accordian layout */}
+                  {showInviteForm && (
+                    <div className="bg-gradient-to-br from-indigo-50/70 to-purple-50/40 p-4 lg:p-6 rounded-2xl lg:rounded-3xl border border-indigo-150 border-l-4 border-l-indigo-600 shadow-[0_12px_35px_rgba(79,70,229,0.08)] animate-in slide-in-from-top-3 duration-300">
+                      <h4 className="font-sans text-sm lg:text-base font-bold text-indigo-950 mb-3 flex items-center gap-1.5">
+                        <span>➕</span> Enroll New Member
+                      </h4>
+                      <form onSubmit={handleInviteMember} className="grid gap-4 sm:grid-cols-2 items-end">
+                        <FormField label="Email address" required>
+                          <input
+                            type="email"
+                            required
+                            value={inviteEmail}
+                            onChange={(e) => setInviteEmail(e.target.value)}
+                            className="input-devotional text-xs lg:text-sm py-2 px-3 bg-white"
+                            placeholder="e.g., student@college.edu"
+                          />
+                        </FormField>
+                        <div className="flex gap-2 items-end">
+                          <div className="flex-1">
+                            <FormField label="Role Assign" required>
+                              <select
+                                value={inviteRole}
+                                onChange={(e) => setInviteRole(e.target.value)}
+                                className="input-devotional text-xs lg:text-sm py-2 px-2 bg-white font-semibold"
+                              >
+                                <option value="STUDENT">Student</option>
+                                <option value="TEACHER">Teacher</option>
+                                <option value="STAFF">Staff / Coordinator</option>
+                                <option value="ADMIN">Admin</option>
+                              </select>
+                            </FormField>
+                          </div>
+                          <button type="submit" className="btn-primary py-2 px-4 text-xs lg:text-sm shadow-md hover:shadow-lg transition-all font-bold h-[38px] shrink-0">
+                            Add Member
+                          </button>
+                        </div>
+                      </form>
+                    </div>
+                  )}
+
+                  {/* Members List */}
+                  <div className="bg-white/80 backdrop-blur-xl rounded-2xl lg:rounded-3xl border border-white/60 shadow-[0_8px_30px_rgb(0,0,0,0.02)] divide-y divide-emerald-900/5 mt-3">
                     {(() => {
                       const filteredMembers = members
                         .filter(m => m.isApproved !== false)
@@ -1354,199 +1586,315 @@ function CenterContent() {
                         });
 
                       if (filteredMembers.length === 0) {
-                        return <div className="p-10 text-center text-emerald-950/40 font-semibold italic text-sm">No active registrations found matching filters.</div>;
+                        return <div className="p-8 text-center text-emerald-950/40 font-semibold italic text-xs rounded-2xl lg:rounded-3xl">No active registrations found matching filters.</div>;
                       }
 
-                      return filteredMembers.map((m) => (
-                        <div key={m.id} className="flex flex-wrap justify-between items-center p-5 gap-4 hover:bg-emerald-50/20 transition-colors">
-                          <div className="min-w-0 flex items-center gap-4">
-                            <div className="w-10 h-10 rounded-full bg-gradient-to-br from-emerald-100 to-teal-100 flex items-center justify-center text-emerald-700 font-black text-lg border border-emerald-200/50 shadow-inner shrink-0">
-                              {m.user.firstName[0]}{m.user.lastName[0]}
-                            </div>
-                            <div>
-                              <p className="font-extrabold text-emerald-950 text-base leading-tight">{m.user.firstName} {m.user.lastName}</p>
-                              <p className="text-xs text-emerald-950/50 font-bold mt-0.5">{m.user.email}</p>
-                            </div>
-                          </div>
-                          <div className="flex items-center gap-3 relative">
-                            {/* Role Select */}
-                            <select
-                              value={m.role}
-                              onChange={(e) => handleUpdateMemberRole(m.id, e.target.value)}
-                              disabled={role !== 'ADMIN' && role !== 'SUPER_ADMIN'}
-                              className={`px-2.5 py-1.5 rounded-xl text-xs font-black uppercase shadow-sm border focus:outline-none focus:ring-2 focus:ring-indigo-400 cursor-pointer ${
-                                m.role === 'ADMIN' 
-                                  ? 'bg-indigo-50 text-indigo-700 border-indigo-150' 
-                                  : m.role === 'TEACHER' 
-                                    ? 'bg-emerald-50 text-emerald-700 border-emerald-150' 
-                                    : m.role === 'STAFF'
-                                      ? 'bg-purple-50 text-purple-700 border-purple-150'
-                                      : 'bg-slate-50 text-slate-700 border-slate-150'
+                      const totalMembers = filteredMembers.length;
+                      const totalPages = Math.ceil(totalMembers / membersPerPage) || 1;
+                      const currentPageClamped = Math.min(membersCurrentPage, totalPages);
+                      const paginatedMembers = filteredMembers.slice(
+                        (currentPageClamped - 1) * membersPerPage,
+                        currentPageClamped * membersPerPage
+                      );
+
+                      return (
+                        <>
+                          {paginatedMembers.map((m, index) => (
+                            <div 
+                              key={m.id} 
+                              className={`flex justify-between items-center p-2.5 sm:p-4 lg:p-5 gap-2.5 hover:bg-emerald-50/10 transition-colors ${
+                                index === 0 ? 'rounded-t-2xl lg:rounded-t-3xl' : ''
+                              } ${
+                                index === paginatedMembers.length - 1 ? 'rounded-b-2xl lg:rounded-b-3xl' : ''
                               }`}
                             >
-                              <option value="STUDENT">Student</option>
-                              <option value="TEACHER">Teacher</option>
-                              <option value="STAFF">Staff</option>
-                              <option value="ADMIN">Admin</option>
-                            </select>
-
-                            {/* Batches Dropdown with Checkboxes (tick boxes) for Teacher and Student */}
-                            {(m.role === 'TEACHER' || m.role === 'STUDENT') && (role === 'ADMIN' || role === 'SUPER_ADMIN') && (
-                              <div className="relative">
-                                <button
-                                  type="button"
-                                  onClick={() => setOpenBatchSelectUserId(openBatchSelectUserId === m.id ? null : m.id)}
-                                  className="bg-white border border-slate-200 text-slate-700 text-xs font-bold px-3 py-1.5 rounded-xl uppercase tracking-wider shadow-sm flex items-center gap-1.5 hover:bg-slate-50 transition-all cursor-pointer"
+                              <div className="min-w-0 flex items-center gap-2.5">
+                                <div className="w-8 h-8 sm:w-9 sm:h-9 rounded-full bg-gradient-to-br from-emerald-100 to-teal-100 flex items-center justify-center text-emerald-700 font-black text-xs sm:text-sm border border-emerald-200/50 shadow-inner shrink-0">
+                                  {m.user.firstName[0]}{m.user.lastName[0]}
+                                </div>
+                                <div className="min-w-0">
+                                  <p className="font-extrabold text-emerald-950 text-xs sm:text-sm lg:text-base leading-tight truncate">{m.user.firstName} {m.user.lastName}</p>
+                                  <p className="text-[9px] sm:text-[10px] lg:text-xs text-emerald-950/50 font-bold mt-0.5 truncate">{m.user.email}</p>
+                                </div>
+                              </div>
+                              <div className="flex items-center gap-2 relative shrink-0">
+                                {/* Role Select */}
+                                <select
+                                  value={m.role}
+                                  onChange={(e) => handleUpdateMemberRole(m.id, e.target.value)}
+                                  disabled={role !== 'ADMIN' && role !== 'SUPER_ADMIN'}
+                                  className={`px-2.5 py-1 rounded-lg text-[10px] lg:text-xs font-black uppercase shadow-sm border focus:outline-none focus:ring-2 focus:ring-indigo-400 cursor-pointer ${
+                                    m.role === 'ADMIN' 
+                                      ? 'bg-indigo-50 text-indigo-700 border-indigo-150' 
+                                      : m.role === 'TEACHER' 
+                                        ? 'bg-emerald-50 text-emerald-700 border-emerald-150' 
+                                        : m.role === 'STAFF'
+                                          ? 'bg-purple-50 text-purple-700 border-purple-150'
+                                          : 'bg-slate-50 text-slate-700 border-slate-150'
+                                  }`}
                                 >
-                                  <span>🎒 Batches ({m.batchMemberships?.length || 0})</span>
-                                  <span className="text-[10px] text-slate-400 transition-transform duration-200" style={{ transform: openBatchSelectUserId === m.id ? 'rotate(180deg)' : 'none' }}>▼</span>
-                                </button>
-                                {openBatchSelectUserId === m.id && (
-                                  <div className="absolute right-0 mt-2 w-56 bg-white border border-slate-150 rounded-2xl shadow-xl z-50 p-3 space-y-2 animate-in fade-in slide-in-from-top-2 duration-200">
-                                    <div className="text-[9px] font-black text-slate-400 uppercase tracking-widest px-1 pb-1 border-b border-slate-100 flex justify-between items-center">
-                                      <span>Assign Batches</span>
-                                      <button 
-                                        type="button" 
-                                        onClick={() => setOpenBatchSelectUserId(null)}
-                                        className="text-slate-400 hover:text-slate-650 font-extrabold text-xs"
-                                      >
-                                        ×
-                                      </button>
-                                    </div>
-                                    <div className="max-h-48 overflow-y-auto space-y-1.5 py-1">
-                                      {batches.map((b) => {
-                                        const isAssigned = m.batchMemberships?.some((bm: any) => bm.batchId === b.id);
-                                        const isLoading = batchActionLoadingMap[`${m.id}-${b.id}`];
-                                        return (
-                                          <label 
-                                            key={b.id} 
-                                            className={`flex items-center gap-2.5 px-2 py-1.5 hover:bg-slate-50 rounded-lg cursor-pointer text-xs font-bold text-slate-700 select-none transition-all ${
-                                              isLoading ? 'opacity-50 cursor-not-allowed pointer-events-none' : ''
-                                            }`}
+                                  <option value="STUDENT">Student</option>
+                                  <option value="TEACHER">Teacher</option>
+                                  <option value="STAFF">Staff</option>
+                                  <option value="ADMIN">Admin</option>
+                                </select>
+
+                                {/* Batches Dropdown */}
+                                {(m.role === 'TEACHER' || m.role === 'STUDENT') && (role === 'ADMIN' || role === 'SUPER_ADMIN') && (
+                                  <div className="relative">
+                                    <button
+                                      type="button"
+                                      onClick={() => setOpenBatchSelectUserId(openBatchSelectUserId === m.id ? null : m.id)}
+                                      className="bg-white border border-slate-200 text-slate-750 text-[10px] lg:text-xs font-bold px-2.5 py-1 rounded-lg uppercase tracking-wide shadow-sm flex items-center gap-1 hover:bg-slate-55 transition-all cursor-pointer"
+                                    >
+                                      <span>🎒 Batches ({m.batchMemberships?.length || 0})</span>
+                                      <span className="text-[9px] text-slate-400 transition-transform duration-250" style={{ transform: openBatchSelectUserId === m.id ? 'rotate(180deg)' : 'none' }}>▼</span>
+                                    </button>
+                                    {openBatchSelectUserId === m.id && (
+                                      <div className="absolute right-0 top-full mt-1.5 w-52 bg-white border border-slate-150 rounded-xl shadow-xl z-50 p-2.5 space-y-1.5 animate-in fade-in slide-in-from-top-2 duration-205">
+
+                                        <div className="text-[8px] font-black text-slate-400 uppercase tracking-widest px-1 pb-1 border-b border-slate-100 flex justify-between items-center">
+                                          <span>Assign Batches</span>
+                                          <button 
+                                            type="button" 
+                                            onClick={() => setOpenBatchSelectUserId(null)}
+                                            className="text-slate-400 hover:text-slate-650 font-extrabold text-xs"
                                           >
-                                            <input
-                                              type="checkbox"
-                                              checked={isAssigned}
-                                              disabled={isLoading}
-                                              onChange={() => {
-                                                if (isAssigned) {
-                                                  handleRemoveBatchMember(b.id, m.id, true);
-                                                } else {
-                                                  handleAssignBatchMember(b.id, m.id);
-                                                }
-                                              }}
-                                              className="w-4.5 h-4.5 rounded text-indigo-650 border-slate-350 focus:ring-indigo-500 cursor-pointer"
-                                            />
-                                            <span className="truncate flex items-center gap-1.5">
-                                              {b.name}
-                                              {isLoading && (
-                                                <span className="w-3 h-3 border-2 border-indigo-200 border-t-indigo-600 rounded-full animate-spin inline-block"></span>
-                                              )}
-                                            </span>
-                                          </label>
-                                        );
-                                      })}
-                                      {batches.length === 0 && (
-                                        <div className="text-center text-[10px] text-slate-400 py-3 italic font-semibold">No batches found.</div>
-                                      )}
-                                    </div>
+                                            ×
+                                          </button>
+                                        </div>
+                                        <div className="max-h-40 overflow-y-auto space-y-1 py-0.5">
+                                          {batches.map((b) => {
+                                            const isAssigned = m.batchMemberships?.some((bm: any) => bm.batchId === b.id);
+                                            const isLoading = batchActionLoadingMap[`${m.id}-${b.id}`];
+                                            return (
+                                              <label 
+                                                key={b.id} 
+                                                className={`flex items-center gap-2 px-1.5 py-1 hover:bg-slate-50 rounded-md cursor-pointer text-[11px] font-bold text-slate-600 select-none transition-all ${
+                                                  isLoading ? 'opacity-50 cursor-not-allowed pointer-events-none' : ''
+                                                }`}
+                                              >
+                                                <input
+                                                  type="checkbox"
+                                                  checked={isAssigned}
+                                                  disabled={isLoading}
+                                                  onChange={() => {
+                                                    if (isAssigned) {
+                                                      handleRemoveBatchMember(b.id, m.id, true);
+                                                    } else {
+                                                      handleAssignBatchMember(b.id, m.id);
+                                                    }
+                                                  }}
+                                                  className="w-4 h-4 rounded text-indigo-650 border-slate-350 focus:ring-indigo-500 cursor-pointer"
+                                                />
+                                                <span className="truncate flex items-center gap-1">
+                                                  {b.name}
+                                                  {isLoading && (
+                                                    <span className="w-2.5 h-2.5 border border-indigo-200 border-t-indigo-600 rounded-full animate-spin inline-block"></span>
+                                                  )}
+                                                </span>
+                                              </label>
+                                            );
+                                          })}
+                                          {batches.length === 0 && (
+                                            <div className="text-center text-[9px] text-slate-400 py-2 italic font-semibold">No batches found.</div>
+                                          )}
+                                        </div>
+                                      </div>
+                                    )}
                                   </div>
                                 )}
                               </div>
-                            )}
+                            </div>
+                          ))}
+
+                          {/* Member List Pagination controls footer */}
+                          <div className="px-4 py-3 bg-slate-50/50 border-t border-slate-100 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs text-indigo-950 font-bold rounded-b-2xl lg:rounded-b-3xl">
+                            <div className="text-slate-500 text-center sm:text-left">
+                              Showing {totalMembers > 0 ? (currentPageClamped - 1) * membersPerPage + 1 : 0} to {Math.min(currentPageClamped * membersPerPage, totalMembers)} of {totalMembers} members
+                            </div>
+
+                            <div className="flex items-center gap-4 flex-wrap justify-center">
+                              <div className="flex items-center gap-2">
+                                <span className="text-slate-400 font-medium">Rows:</span>
+                                <select
+                                  value={membersPerPage}
+                                  onChange={(e) => {
+                                    setMembersPerPage(Number(e.target.value));
+                                    setMembersCurrentPage(1);
+                                  }}
+                                  className="bg-white border border-slate-200 rounded-lg px-2 py-1 text-xs focus:outline-none cursor-pointer"
+                                >
+                                  <option value={10}>10</option>
+                                  <option value={30}>30</option>
+                                  <option value={50}>50</option>
+                                </select>
+                              </div>
+
+                              <div className="flex items-center gap-1.5">
+                                <button
+                                  type="button"
+                                  disabled={currentPageClamped <= 1}
+                                  onClick={() => setMembersCurrentPage(p => Math.max(p - 1, 1))}
+                                  className={`px-3 py-1.5 rounded-lg border text-xs font-black transition cursor-pointer select-none ${
+                                    currentPageClamped <= 1
+                                      ? 'bg-slate-50 border-slate-100 text-slate-350 cursor-not-allowed shadow-none'
+                                      : 'bg-white border-slate-200 hover:bg-slate-50 text-indigo-950 shadow-sm'
+                                  }`}
+                                >
+                                  ← Prev
+                                </button>
+                                <span className="text-slate-450 font-medium px-1">Page {currentPageClamped} of {totalPages}</span>
+                                <button
+                                  type="button"
+                                  disabled={currentPageClamped >= totalPages}
+                                  onClick={() => setMembersCurrentPage(p => Math.min(p + 1, totalPages))}
+                                  className={`px-3 py-1.5 rounded-lg border text-xs font-black transition cursor-pointer select-none ${
+                                    currentPageClamped >= totalPages
+                                      ? 'bg-slate-50 border-slate-100 text-slate-350 cursor-not-allowed shadow-none'
+                                      : 'bg-white border-slate-200 hover:bg-slate-55 text-indigo-950 shadow-sm'
+                                  }`}
+                                >
+                                  Next →
+                                </button>
+                              </div>
+                            </div>
                           </div>
-                        </div>
-                      ));
+                        </>
+                      );
                     })()}
                   </div>
-                </div>
-
-                <div>
-                  <Card className="p-5">
-                    <h3 className="font-sans text-base font-bold text-indigo-950 mb-4">Enroll New Member</h3>
-                    <form onSubmit={handleInviteMember} className="space-y-4">
-                      <FormField label="Email address" required>
-                        <input
-                          type="email"
-                          required
-                          value={inviteEmail}
-                          onChange={(e) => setInviteEmail(e.target.value)}
-                          className="input-devotional"
-                          placeholder="e.g., student@college.edu"
-                        />
-                      </FormField>
-                      <FormField label="Role Assign" required>
-                        <select
-                          value={inviteRole}
-                          onChange={(e) => setInviteRole(e.target.value)}
-                          className="input-devotional font-semibold"
-                        >
-                          <option value="STUDENT">Student</option>
-                          <option value="TEACHER">Teacher</option>
-                          <option value="STAFF">Staff / Coordinator</option>
-                          <option value="ADMIN">Admin</option>
-                        </select>
-                      </FormField>
-                      <button type="submit" className="btn-primary w-full mt-2">
-                        Add Member
-                      </button>
-                    </form>
-                  </Card>
                 </div>
               </div>
             )}
 
             {/* Tab: Pending Approvals */}
             {activeTab === 'pending' && (
-              <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
-                <div className="flex flex-col mb-2">
-                  <h3 className="font-sans text-xl font-black text-amber-950 flex items-center gap-2">
-                    <span className="text-2xl drop-shadow-sm">⏳</span> Pending Registrations
-                  </h3>
-                  <p className="text-xs font-bold text-amber-950/60 mt-1 max-w-2xl leading-relaxed">Students who joined using the Center Join Code and requested a Class Standard allocation. Action required.</p>
+              <div className="space-y-4 animate-in fade-in slide-in-from-bottom-4 duration-500">
+                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+                  <div>
+                    <h3 className="font-sans text-base lg:text-xl font-black text-amber-950 flex items-center gap-2">
+                      <span className="text-xl lg:text-2xl drop-shadow-sm">⏳</span> Pending Registrations
+                    </h3>
+                    <p className="text-[11px] lg:text-xs font-bold text-amber-950/60 mt-0.5 max-w-2xl leading-relaxed">Students who joined using the Center Join Code and requested a Class Standard allocation.</p>
+                  </div>
                 </div>
+
+                {/* Bulk Actions Control Panel */}
+                {pendingMembers.length > 0 && (
+                  <div className="bg-gradient-to-r from-amber-50 to-orange-50/60 border border-amber-200/60 p-3 rounded-2xl flex flex-wrap items-center justify-between gap-3 shadow-sm">
+                    <label className="flex items-center gap-2.5 cursor-pointer text-xs font-black text-amber-950 select-none">
+                      <input
+                        type="checkbox"
+                        checked={pendingMembers.length > 0 && selectedPendingIds.length === pendingMembers.length}
+                        onChange={(e) => {
+                          if (e.target.checked) {
+                            setSelectedPendingIds(pendingMembers.map((pm) => pm.id));
+                          } else {
+                            setSelectedPendingIds([]);
+                          }
+                        }}
+                        className="w-4.5 h-4.5 rounded text-amber-600 border-amber-300 focus:ring-amber-500 cursor-pointer"
+                      />
+                      <span>Select All ({pendingMembers.length})</span>
+                    </label>
+
+                    {selectedPendingIds.length > 0 && (
+                      <div className="flex items-center gap-2 animate-in fade-in zoom-in-95 duration-200">
+                        <span className="text-[10px] font-extrabold text-amber-900 bg-amber-200/50 px-2 py-1 rounded-lg">
+                          {selectedPendingIds.length} Selected
+                        </span>
+                        <button
+                          onClick={handleBulkApprove}
+                          disabled={bulkProcessing}
+                          className="bg-emerald-500 hover:bg-emerald-600 disabled:bg-slate-300 text-white text-[10px] lg:text-xs font-black px-3.5 py-2 rounded-xl shadow-sm hover:shadow transition-all cursor-pointer flex items-center gap-1"
+                        >
+                          {bulkProcessing ? (
+                            <span className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin inline-block"></span>
+                          ) : '✓'}
+                          Approve
+                        </button>
+                        <button
+                          onClick={handleBulkReject}
+                          disabled={bulkProcessing}
+                          className="bg-white hover:bg-red-50 disabled:bg-slate-50 border border-red-200 disabled:border-slate-200 text-red-650 disabled:text-slate-450 text-[10px] lg:text-xs font-black px-3.5 py-2 rounded-xl shadow-sm hover:shadow transition-all cursor-pointer"
+                        >
+                          Reject
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
                 
-                <div className="bg-gradient-to-br from-amber-50/70 to-orange-50/40 backdrop-blur-xl rounded-3xl border border-white/80 shadow-[0_8px_30px_rgb(0,0,0,0.03)] divide-y divide-amber-900/10 relative overflow-hidden">
-                  <div className="absolute top-0 right-0 w-48 h-48 bg-gradient-to-bl from-amber-100/40 to-transparent rounded-bl-full pointer-events-none"></div>
+                <div className="bg-white/80 backdrop-blur-xl rounded-2xl lg:rounded-3xl border border-white/60 shadow-[0_8px_30px_rgb(0,0,0,0.02)] divide-y divide-amber-900/10 relative overflow-hidden">
+                  <div className="absolute top-0 right-0 w-32 h-32 bg-gradient-to-bl from-amber-100/20 to-transparent rounded-bl-full pointer-events-none"></div>
                   
                   {pendingMembers.length === 0 ? (
-                    <div className="p-10 text-center text-amber-950/40 font-semibold italic text-sm relative z-10">No pending student approval requests.</div>
+                    <div className="p-8 text-center text-amber-950/40 font-semibold italic text-xs relative z-10">No pending student approval requests.</div>
                   ) : (
-                    pendingMembers.map((pm) => (
-                      <div key={pm.id} className="flex flex-wrap justify-between items-center p-6 gap-6 hover:bg-amber-100/20 transition-colors relative z-10">
-                        <div className="flex items-center gap-4">
-                          <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-amber-100 to-orange-100 flex items-center justify-center text-amber-700 font-black text-xl border border-amber-200/50 shadow-inner shrink-0 transform -rotate-3">
-                            {pm.user.firstName[0]}{pm.user.lastName[0]}
-                          </div>
-                          <div>
-                            <p className="font-extrabold text-amber-950 text-base">{pm.user.firstName} {pm.user.lastName}</p>
-                            <p className="text-xs text-amber-950/60 font-bold mt-0.5">{pm.user.email}</p>
-                            <div className="mt-2.5 flex items-center gap-2 flex-wrap">
-                              <span className="text-[10px] uppercase font-black text-amber-950/40 tracking-wider">Requested:</span>
-                              {pm.batchMemberships?.map((bm: any) => (
-                                <span key={bm.batchId} className="bg-white text-amber-700 border border-amber-200/50 text-xs font-black px-2.5 py-1 rounded-lg shadow-sm">
-                                  {bm.batch.name}
-                                </span>
-                              )) || <span className="text-xs text-red-500 font-black">None Selected</span>}
+                    pendingMembers.map((pm, index) => {
+                      const isChecked = selectedPendingIds.includes(pm.id);
+                      return (
+                        <div 
+                          key={pm.id} 
+                          className={`flex flex-col sm:flex-row sm:items-center p-3 lg:p-5 gap-3 hover:bg-amber-100/10 transition-colors relative z-10 ${
+                            index === 0 ? 'rounded-t-2xl lg:rounded-t-3xl' : ''
+                          } ${
+                            index === pendingMembers.length - 1 ? 'rounded-b-2xl lg:rounded-b-3xl' : ''
+                          }`}
+                        >
+                          {/* Selection checkbox */}
+                          <div className="flex items-center gap-3 shrink-0">
+                            <input
+                              type="checkbox"
+                              checked={isChecked}
+                              onChange={() => {
+                                if (isChecked) {
+                                  setSelectedPendingIds(prev => prev.filter(id => id !== pm.id));
+                                } else {
+                                  setSelectedPendingIds(prev => [...prev, pm.id]);
+                                }
+                              }}
+                              className="w-4.5 h-4.5 rounded text-amber-600 border-slate-300 focus:ring-amber-500 cursor-pointer"
+                            />
+                            
+                            <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-amber-100 to-orange-100 flex items-center justify-center text-amber-700 font-black text-sm border border-amber-200/50 shadow-inner">
+                              {pm.user.firstName[0]}{pm.user.lastName[0]}
                             </div>
                           </div>
+
+                          {/* Member details info */}
+                          <div className="flex-1 min-w-0">
+                            <p className="font-extrabold text-amber-950 text-sm lg:text-base leading-tight truncate">{pm.user.firstName} {pm.user.lastName}</p>
+                            <p className="text-[10px] lg:text-xs text-amber-950/50 font-bold mt-0.5 truncate">{pm.user.email}</p>
+                            <div className="mt-2 flex items-center gap-1.5 flex-wrap">
+                              <span className="text-[9px] uppercase font-black text-amber-950/40 tracking-wider">Requested:</span>
+                              {pm.batchMemberships?.map((bm: any) => (
+                                <span key={bm.batchId} className="bg-amber-50 text-amber-700 border border-amber-100 text-[10px] font-bold px-2 py-0.5 rounded-md shadow-sm">
+                                  {bm.batch.name}
+                                </span>
+                              )) || <span className="text-[10px] text-red-500 font-black">None Selected</span>}
+                            </div>
+                          </div>
+
+                          {/* Action CTA Buttons */}
+                          <div className="flex items-center justify-end gap-2 shrink-0">
+                            <button
+                              onClick={() => handleApproveMember(pm.id)}
+                              className="bg-emerald-500 hover:bg-emerald-600 text-white text-[10px] lg:text-xs font-black px-3.5 py-1.5 rounded-lg shadow-sm hover:shadow transition-all cursor-pointer flex items-center gap-1"
+                            >
+                              <span>✓</span> Approve
+                            </button>
+                            <button
+                              onClick={() => handleRejectMember(pm.id)}
+                              className="bg-white hover:bg-red-50 border border-red-150 text-red-650 text-[10px] lg:text-xs font-black px-3.5 py-1.5 rounded-lg shadow-sm hover:shadow transition-all cursor-pointer"
+                            >
+                              Reject
+                            </button>
+                          </div>
                         </div>
-                        <div className="flex gap-3">
-                          <button
-                            onClick={() => handleApproveMember(pm.id)}
-                            className="bg-emerald-500 hover:bg-emerald-600 text-white text-xs font-black px-4 py-2.5 rounded-xl shadow-md hover:shadow-lg transition-all cursor-pointer flex items-center gap-1.5"
-                          >
-                            <span>✓</span> Approve
-                          </button>
-                          <button
-                            onClick={() => handleRejectMember(pm.id)}
-                            className="bg-white hover:bg-red-50 border border-red-100 text-red-600 text-xs font-black px-4 py-2.5 rounded-xl shadow-sm hover:shadow transition-all cursor-pointer"
-                          >
-                            Reject
-                          </button>
-                        </div>
-                      </div>
-                    ))
+                      );
+                    })
                   )}
                 </div>
               </div>
@@ -1554,14 +1902,14 @@ function CenterContent() {
 
             {/* Tab: Batches / Standards */}
             {activeTab === 'batches' && (
-              <div className={selectedManageBatch ? "w-full animate-in fade-in slide-in-from-bottom-4 duration-500" : "grid gap-6 md:grid-cols-3 animate-in fade-in slide-in-from-bottom-4 duration-500"}>
-                <div className={selectedManageBatch ? "w-full space-y-6" : "md:col-span-2 space-y-6"}>
+              <div className={selectedManageBatch ? "w-full animate-in fade-in slide-in-from-bottom-4 duration-500" : (showCreateBatchForm ? "grid gap-6 md:grid-cols-3 animate-in fade-in slide-in-from-bottom-4 duration-500" : "w-full animate-in fade-in slide-in-from-bottom-4 duration-500")}>
+                <div className={selectedManageBatch ? "w-full space-y-6" : (showCreateBatchForm ? "md:col-span-2 space-y-6" : "w-full space-y-6")}>
                   {selectedManageBatch ? (
-                    <div className="bg-gradient-to-br from-white to-fuchsia-50/20 backdrop-blur-xl rounded-3xl border border-white shadow-[0_8px_30px_rgb(0,0,0,0.04)] p-6 lg:p-8 relative overflow-hidden">
+                    <div className="bg-gradient-to-br from-white to-fuchsia-50/20 backdrop-blur-xl rounded-3xl border border-white shadow-[0_8px_30px_rgb(0,0,0,0.04)] p-3.5 sm:p-6 lg:p-8 relative overflow-hidden">
                       <div className="absolute top-0 right-0 w-64 h-64 bg-gradient-to-bl from-fuchsia-100/30 to-transparent rounded-bl-full pointer-events-none"></div>
                       
                       <button 
-                        onClick={() => { setSelectedManageBatch(null); setBatchStudentSearchQuery(''); }} 
+                        onClick={() => { setSelectedManageBatch(null); setBatchStudentSearchQuery(''); setStudentsCurrentPage(1); }} 
                         className="text-xs font-black text-fuchsia-600 hover:text-fuchsia-800 transition-colors mb-6 uppercase tracking-wider flex items-center gap-1 cursor-pointer"
                       >
                         ← Back to Classrooms
@@ -1714,23 +2062,25 @@ function CenterContent() {
                           </div>
 
                           {/* Quick Actions & Search */}
-                          <div className="flex flex-wrap items-center gap-3 w-full sm:w-auto">
-                            <div className="relative z-10 flex-1 sm:flex-initial min-w-[200px] flex items-center bg-white rounded-2xl shadow-sm border border-fuchsia-100/60 px-3 overflow-hidden focus-within:ring-2 focus-within:ring-fuchsia-200 transition-all">
+                          <div className="flex flex-col sm:flex-row sm:items-center gap-3 w-full sm:w-auto">
+                            {/* Search bar */}
+                            <div className="relative z-10 w-full sm:w-60 flex items-center bg-white rounded-2xl shadow-sm border border-fuchsia-100/60 px-3 overflow-hidden focus-within:ring-2 focus-within:ring-fuchsia-200 transition-all">
                               <span className="text-fuchsia-600/50 font-bold px-1 text-xs">🔍</span>
                               <input
                                 type="text"
                                 placeholder="Search enrolled students..."
                                 value={batchStudentSearchQuery}
                                 onChange={(e) => setBatchStudentSearchQuery(e.target.value)}
-                                className="bg-transparent text-xs py-2 px-1.5 flex-1 text-indigo-950 font-bold focus:outline-none w-full"
+                                className="bg-transparent text-xs py-2.5 px-1.5 flex-1 text-indigo-950 font-bold focus:outline-none w-full"
                               />
                             </div>
 
-                            <div className="flex gap-2 w-full sm:w-auto">
+                            {/* Select & Enroll Button */}
+                            <div className="flex gap-2 w-full sm:w-auto items-stretch">
                               <select
                                 value={assigningStudentId}
                                 onChange={(e) => setAssigningStudentId(e.target.value)}
-                                className="bg-white border border-fuchsia-200 rounded-2xl text-xs py-2 px-3.5 text-indigo-950 font-bold focus:outline-none focus:ring-2 focus:ring-fuchsia-200 cursor-pointer shadow-sm max-w-[200px]"
+                                className="flex-1 sm:flex-initial bg-white border border-fuchsia-200 rounded-2xl text-xs py-2.5 px-3.5 text-indigo-950 font-bold focus:outline-none focus:ring-2 focus:ring-fuchsia-200 cursor-pointer shadow-sm min-h-[40px] max-w-full sm:max-w-[200px]"
                               >
                                 <option value="">-- Choose Student --</option>
                                 {members
@@ -1741,7 +2091,7 @@ function CenterContent() {
                               </select>
                               <button
                                 onClick={() => handleAssignBatchMember(selectedManageBatch.id, assigningStudentId)}
-                                className="btn-primary text-xs py-2 px-4 font-bold shadow-md rounded-2xl bg-fuchsia-600 hover:bg-fuchsia-700 border-0"
+                                className="bg-fuchsia-600 hover:bg-fuchsia-700 text-white shadow-md text-xs font-black px-4 rounded-2xl transition cursor-pointer border-0 shrink-0 min-h-[40px] flex items-center justify-center"
                               >
                                 Enroll Student
                               </button>
@@ -1750,74 +2100,179 @@ function CenterContent() {
                         </div>
 
                         {/* Students Table */}
-                        <div className="bg-white rounded-2xl border border-fuchsia-100/40 overflow-hidden shadow-sm">
-                          <div className="overflow-x-auto">
-                            <table className="w-full text-left text-sm">
-                              <thead className="bg-fuchsia-50/40 border-b border-fuchsia-100/30">
-                                <tr>
-                                  <th className="px-6 py-4.5 font-black text-indigo-950 uppercase tracking-wider text-[10px]">Student Name</th>
-                                  <th className="px-6 py-4.5 font-black text-indigo-950 uppercase tracking-wider text-[10px]">Email Address</th>
-                                  <th className="px-6 py-4.5 font-black text-indigo-950 uppercase tracking-wider text-[10px] text-right">Actions</th>
-                                </tr>
-                              </thead>
-                              <tbody className="divide-y divide-fuchsia-100/20">
-                                {(() => {
-                                  const filteredStudents = selectedManageBatch.memberships?.filter((m: any) => {
-                                    const isStudent = m.membership?.role === 'STUDENT';
-                                    if (!isStudent) return false;
-                                    const fullName = `${m.membership.user.firstName} ${m.membership.user.lastName}`.toLowerCase();
-                                    return fullName.includes(batchStudentSearchQuery.toLowerCase()) || 
-                                      m.membership.user.email.toLowerCase().includes(batchStudentSearchQuery.toLowerCase());
-                                  });
+                        <div className="bg-transparent md:bg-white md:rounded-2xl md:border md:border-fuchsia-100/40 overflow-hidden md:shadow-sm">
+                          {(() => {
+                            const filteredStudents = selectedManageBatch.memberships?.filter((m: any) => {
+                              const isStudent = m.membership?.role === 'STUDENT';
+                              if (!isStudent) return false;
+                              const fullName = `${m.membership.user.firstName} ${m.membership.user.lastName}`.toLowerCase();
+                              return fullName.includes(batchStudentSearchQuery.toLowerCase()) || 
+                                m.membership.user.email.toLowerCase().includes(batchStudentSearchQuery.toLowerCase());
+                            });
 
-                                  if (!filteredStudents || filteredStudents.length === 0) {
-                                    return (
+                            if (!filteredStudents || filteredStudents.length === 0) {
+                              return (
+                                <div className="bg-white rounded-2xl border border-fuchsia-100/40 p-12 text-center text-slate-400 font-semibold italic text-sm shadow-sm">
+                                  {batchStudentSearchQuery ? 'No enrolled students match your search.' : 'No students enrolled in this classroom standard.'}
+                                </div>
+                              );
+                            }
+
+                            const totalStudents = filteredStudents.length;
+                            const totalPages = Math.ceil(totalStudents / studentsPerPage) || 1;
+                            
+                            // Adjust current page if out of bounds (e.g. after search filtering)
+                            const currentPageClamped = Math.min(studentsCurrentPage, totalPages);
+                            
+                            const paginatedStudents = filteredStudents.slice(
+                              (currentPageClamped - 1) * studentsPerPage,
+                              currentPageClamped * studentsPerPage
+                            );
+
+                            return (
+                              <>
+                                {/* Desktop View */}
+                                <div className="hidden md:block overflow-x-auto">
+                                  <table className="w-full text-left text-sm">
+                                    <thead className="bg-fuchsia-50/40 border-b border-fuchsia-100/30">
                                       <tr>
-                                        <td colSpan={3} className="px-6 py-12 text-center text-slate-400 font-semibold italic text-sm">
-                                          {batchStudentSearchQuery ? 'No enrolled students match your search.' : 'No students enrolled in this classroom standard.'}
-                                        </td>
+                                        <th className="px-6 py-4.5 font-black text-indigo-950 uppercase tracking-wider text-[10px]">Student Name</th>
+                                        <th className="px-6 py-4.5 font-black text-indigo-950 uppercase tracking-wider text-[10px]">Email Address</th>
+                                        <th className="px-6 py-4.5 font-black text-indigo-950 uppercase tracking-wider text-[10px] text-right">Actions</th>
                                       </tr>
-                                    );
-                                  }
+                                    </thead>
+                                    <tbody className="divide-y divide-fuchsia-100/20">
+                                      {paginatedStudents.map((bm: any) => (
+                                        <tr key={bm.id} className="hover:bg-fuchsia-50/10 transition-colors">
+                                          <td className="px-6 py-3.5">
+                                            <div className="flex items-center gap-3">
+                                              <div className="w-8 h-8 rounded-full bg-indigo-100 flex items-center justify-center text-indigo-700 font-black text-xs border border-indigo-200/50">
+                                                {bm.membership.user.firstName[0]}
+                                              </div>
+                                              <div className="font-extrabold text-indigo-950">
+                                                {bm.membership.user.firstName} {bm.membership.user.lastName}
+                                              </div>
+                                            </div>
+                                          </td>
+                                          <td className="px-6 py-3.5 font-semibold text-slate-500">
+                                            {bm.membership.user.email}
+                                          </td>
+                                          <td className="px-6 py-3.5 text-right">
+                                            <button
+                                              onClick={() => handleRemoveBatchMember(selectedManageBatch.id, bm.membershipId)}
+                                              className="bg-rose-50 hover:bg-rose-100 text-rose-600 text-xs font-black px-3.5 py-1.5 rounded-xl border border-rose-100 transition shadow-sm inline-flex items-center gap-1 cursor-pointer"
+                                            >
+                                              Remove Enrollment
+                                            </button>
+                                          </td>
+                                        </tr>
+                                      ))}
+                                    </tbody>
+                                  </table>
+                                </div>
 
-                                  return filteredStudents.map((bm: any) => (
-                                    <tr key={bm.id} className="hover:bg-fuchsia-50/10 transition-colors">
-                                      <td className="px-6 py-3.5">
-                                        <div className="flex items-center gap-3">
-                                          <div className="w-8 h-8 rounded-full bg-indigo-100 flex items-center justify-center text-indigo-700 font-black text-xs border border-indigo-200/50">
+                                {/* Mobile Card View */}
+                                <div className="block md:hidden space-y-2">
+                                  {paginatedStudents.map((bm: any) => (
+                                    <div key={bm.id} className="bg-white border border-fuchsia-100/40 rounded-2xl p-3 shadow-[0_4px_15px_rgb(0,0,0,0.01)] hover:shadow transition-shadow">
+                                      <div className="flex items-center gap-3 justify-between">
+                                        <div className="flex items-center gap-2.5 min-w-0">
+                                          <div className="w-7 h-7 rounded-full bg-indigo-50 border border-indigo-100 flex items-center justify-center text-indigo-750 font-black text-xs shrink-0">
                                             {bm.membership.user.firstName[0]}
                                           </div>
-                                          <div className="font-extrabold text-indigo-950">
-                                            {bm.membership.user.firstName} {bm.membership.user.lastName}
+                                          <div className="min-w-0">
+                                            <p className="font-extrabold text-indigo-950 text-xs truncate">{bm.membership.user.firstName} {bm.membership.user.lastName}</p>
+                                            <p className="text-[10px] text-slate-400 font-semibold truncate leading-none mt-0.5">{bm.membership.user.email}</p>
                                           </div>
                                         </div>
-                                      </td>
-                                      <td className="px-6 py-3.5 font-semibold text-slate-500">
-                                        {bm.membership.user.email}
-                                      </td>
-                                      <td className="px-6 py-3.5 text-right">
                                         <button
                                           onClick={() => handleRemoveBatchMember(selectedManageBatch.id, bm.membershipId)}
-                                          className="bg-rose-50 hover:bg-rose-100 text-rose-600 text-xs font-black px-3.5 py-1.5 rounded-xl border border-rose-100 transition shadow-sm inline-flex items-center gap-1 cursor-pointer"
+                                          className="bg-rose-50 hover:bg-rose-105 active:bg-rose-100 text-rose-600 text-[10px] font-black px-2.5 py-1.5 rounded-xl border border-rose-100 transition shadow-sm cursor-pointer shrink-0"
                                         >
-                                          Remove Enrollment
+                                          Remove
                                         </button>
-                                      </td>
-                                    </tr>
-                                  ));
-                                })()}
-                              </tbody>
-                            </table>
-                          </div>
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+
+                                {/* Pagination Controls Footer */}
+                                <div className="mt-4 px-4 py-3 bg-fuchsia-50/20 border-t border-fuchsia-100/30 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs text-indigo-950 font-bold">
+                                  <div className="text-slate-500 text-center sm:text-left">
+                                    Showing {totalStudents > 0 ? (currentPageClamped - 1) * studentsPerPage + 1 : 0} to {Math.min(currentPageClamped * studentsPerPage, totalStudents)} of {totalStudents} students
+                                  </div>
+
+                                  <div className="flex items-center gap-4 flex-wrap justify-center">
+                                    {/* Items Per Page Selector */}
+                                    <div className="flex items-center gap-2">
+                                      <span className="text-slate-400 font-medium">Rows:</span>
+                                      <select
+                                        value={studentsPerPage}
+                                        onChange={(e) => {
+                                          setStudentsPerPage(Number(e.target.value));
+                                          setStudentsCurrentPage(1);
+                                        }}
+                                        className="bg-white border border-slate-200 rounded-lg px-2 py-1 text-xs focus:outline-none cursor-pointer"
+                                      >
+                                        <option value={10}>10</option>
+                                        <option value={30}>30</option>
+                                        <option value={50}>50</option>
+                                      </select>
+                                    </div>
+
+                                    {/* Prev / Next buttons */}
+                                    <div className="flex items-center gap-1.5">
+                                      <button
+                                        type="button"
+                                        disabled={currentPageClamped <= 1}
+                                        onClick={() => setStudentsCurrentPage(p => Math.max(p - 1, 1))}
+                                        className={`px-3 py-1.5 rounded-lg border text-xs font-black transition cursor-pointer select-none ${
+                                          currentPageClamped <= 1
+                                            ? 'bg-slate-50 border-slate-100 text-slate-350 cursor-not-allowed shadow-none'
+                                            : 'bg-white border-slate-200 hover:bg-slate-50 text-indigo-950 shadow-sm'
+                                        }`}
+                                      >
+                                        ← Prev
+                                      </button>
+                                      <span className="text-slate-450 font-medium px-1">Page {currentPageClamped} of {totalPages}</span>
+                                      <button
+                                        type="button"
+                                        disabled={currentPageClamped >= totalPages}
+                                        onClick={() => setStudentsCurrentPage(p => Math.min(p + 1, totalPages))}
+                                        className={`px-3 py-1.5 rounded-lg border text-xs font-black transition cursor-pointer select-none ${
+                                          currentPageClamped >= totalPages
+                                            ? 'bg-slate-50 border-slate-100 text-slate-350 cursor-not-allowed shadow-none'
+                                            : 'bg-white border-slate-200 hover:bg-slate-50 text-indigo-950 shadow-sm'
+                                        }`}
+                                      >
+                                        Next →
+                                      </button>
+                                    </div>
+                                  </div>
+                                </div>
+                              </>
+                            );
+                          })()}
                         </div>
                       </div>
                     </div>
                   ) : (
                     <div className="space-y-4">
-                      <h3 className="font-sans text-lg font-black text-indigo-950">Active Classrooms & Groups</h3>
-                      <div className="grid gap-4 sm:grid-cols-2 lg:gap-6">
+                      <div className="flex flex-wrap justify-between items-center gap-3">
+                        <h3 className="font-sans text-lg font-black text-indigo-950">Active Classrooms & Groups</h3>
+                        {!showCreateBatchForm && (
+                          <button
+                            onClick={() => setShowCreateBatchForm(true)}
+                            className="px-4 py-2.5 rounded-2xl bg-fuchsia-50 hover:bg-fuchsia-100 text-fuchsia-700 text-xs font-black transition cursor-pointer border border-fuchsia-100 shadow-sm flex items-center gap-1.5"
+                          >
+                            ➕ Create Classroom
+                          </button>
+                        )}
+                      </div>
+                      
+                      <div className={`grid gap-4 sm:grid-cols-2 ${showCreateBatchForm ? 'lg:grid-cols-2' : 'lg:grid-cols-3'} lg:gap-6`}>
                         {batches.length === 0 ? (
-                          <div className="col-span-2 bg-white/70 backdrop-blur-md rounded-3xl border border-white/60 p-8 text-center text-indigo-950/40 font-semibold italic text-sm">No classroom groups created yet.</div>
+                          <div className="col-span-full bg-white/70 backdrop-blur-md rounded-3xl border border-white/60 p-8 text-center text-indigo-950/40 font-semibold italic text-sm">No classroom groups created yet.</div>
                         ) : (
                           batches.map((b) => (
                             <div
@@ -1835,7 +2290,17 @@ function CenterContent() {
                               </p>
                               <div className="mt-5 pt-3 border-t border-slate-100 flex justify-between items-center text-xs text-slate-400 font-bold z-10 relative">
                                 <span className="flex items-center gap-1"><span className="text-indigo-500">🎒</span> {b.memberships?.filter((m: any) => m.membership?.role === 'STUDENT').length || 0} Students</span>
-                                <span className="flex items-center gap-1"><span className="text-emerald-500">🎓</span> {b.memberships?.filter((m: any) => m.membership?.role === 'TEACHER').length || 0} Teachers</span>
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    const regUrl = `${window.location.origin}/register?code=${center.joinCode}&batch=${b.id}`;
+                                    navigator.clipboard.writeText(regUrl);
+                                    showBanner(`Registration link for "${b.name}" copied to clipboard!`, 'success');
+                                  }}
+                                  className="text-[10px] font-black uppercase text-fuchsia-600 bg-fuchsia-50 hover:bg-fuchsia-100 hover:text-fuchsia-800 transition px-2 py-0.5 rounded-lg border border-fuchsia-200/50 shadow-sm flex items-center gap-1 cursor-pointer"
+                                >
+                                  <span>🔗</span> Link
+                                </button>
                               </div>
                             </div>
                           ))
@@ -1845,13 +2310,22 @@ function CenterContent() {
                   )}
                 </div>
 
-                {!selectedManageBatch && (
-                  <div>
+                {!selectedManageBatch && showCreateBatchForm && (
+                  <div className="animate-in slide-in-from-right-4 duration-300">
                     <div className="rounded-3xl border border-white bg-gradient-to-br from-rose-50/50 to-white backdrop-blur-xl p-5 lg:p-6 shadow-[0_8px_30px_rgb(0,0,0,0.05)] relative overflow-hidden">
                       <div className="absolute top-0 right-0 -mr-12 -mt-12 w-24 h-24 rounded-full bg-gradient-to-br from-rose-200/50 to-orange-200/50 blur-xl pointer-events-none"></div>
-                      <h3 className="font-sans text-base font-black text-indigo-950 mb-4 flex items-center gap-2">
-                        <span>🆕</span> Create Classroom / Group
-                      </h3>
+                      <div className="flex justify-between items-center mb-4 relative z-10">
+                        <h3 className="font-sans text-base font-black text-indigo-950 flex items-center gap-2">
+                          <span>🆕</span> Create Classroom / Group
+                        </h3>
+                        <button
+                          type="button"
+                          onClick={() => setShowCreateBatchForm(false)}
+                          className="w-7 h-7 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-500 hover:text-slate-700 transition flex items-center justify-center text-xs font-black cursor-pointer border-0"
+                        >
+                          ✕
+                        </button>
+                      </div>
                       <form onSubmit={handleCreateBatch} className="space-y-4 relative z-10">
                         <FormField label="Standard / Group Name" required>
                           <input
@@ -1874,7 +2348,7 @@ function CenterContent() {
                         <button 
                           type="submit" 
                           disabled={creatingBatch} 
-                          className="btn-primary w-full py-2.5 bg-gradient-to-r from-rose-500 to-orange-500 hover:from-rose-600 hover:to-orange-600 text-white shadow-md hover:shadow-lg transition-all rounded-xl font-bold border-0"
+                          className="btn-primary w-full py-2.5 bg-gradient-to-r from-rose-500 to-orange-500 hover:from-rose-600 hover:to-orange-600 text-white shadow-md hover:shadow-lg transition-all rounded-xl font-bold border-0 cursor-pointer"
                         >
                           {creatingBatch ? 'Creating Group...' : 'Create Group'}
                         </button>
@@ -2349,215 +2823,298 @@ function CenterContent() {
 
             {/* Tab: YouTube channels */}
             {activeTab === 'youtube' && (
-              <div className="grid gap-6 md:grid-cols-3">
-                <div className="md:col-span-2 space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
-                  <h3 className="font-sans text-xl font-black text-red-950 flex items-center gap-2">
-                    <span className="text-2xl drop-shadow-sm">▶️</span> Linked YouTube Channels
+              <div className="space-y-4">
+                <div className="flex items-center justify-between gap-4">
+                  <h3 className="font-sans text-base lg:text-lg font-black text-red-950 flex items-center gap-2">
+                    <span className="text-xl drop-shadow-sm">▶️</span> Linked YouTube Channels
                   </h3>
-                  <div className="grid gap-4 sm:grid-cols-2">
-                    {ytChannels.length === 0 ? (
-                      <div className="col-span-2 bg-gradient-to-br from-red-50/70 to-rose-50/40 backdrop-blur-xl rounded-3xl border border-white/80 p-10 text-center text-red-950/40 font-semibold italic text-sm shadow-[0_8px_30px_rgb(0,0,0,0.02)]">No YouTube channels linked to this center yet.</div>
-                    ) : (
-                      ytChannels.map((c) => (
-                        <Card key={c.id} className="p-4 hover:shadow-md transition relative flex flex-col justify-between">
-                          <div className="flex gap-3 items-start">
-                            {c.thumbnail ? (
-                              <img
-                                src={c.thumbnail}
-                                alt={c.title}
-                                className="h-12 w-12 rounded-full object-cover border border-slate-200 shrink-0"
-                                onError={(e) => {
-                                  (e.target as HTMLImageElement).src = 'https://www.youtube.com/s/desktop/82d92138/img/logos/favicon_144x144.png';
-                                }}
-                              />
-                            ) : (
-                              <div className="h-12 w-12 rounded-full bg-red-100 flex items-center justify-center text-red-600 font-extrabold text-sm shrink-0">
-                                YT
-                              </div>
-                            )}
-                            <div className="flex-1 min-w-0">
-                              <div className="flex items-center gap-2 flex-wrap">
-                                <h4 className="font-bold text-indigo-950 text-sm leading-tight">{c.title}</h4>
-                                {syncProgressMap[c.channelId]?.status === 'syncing' && (
-                                  <span className="inline-flex items-center gap-0.5 bg-amber-50 text-amber-700 border border-amber-200 text-[9px] font-extrabold px-1.5 py-0.5 rounded animate-pulse">
-                                    ⚡ DEEP SYNCING
-                                  </span>
-                                )}
-                              </div>
-                              <p className="text-[10px] text-slate-400 mt-0.5 select-all">ID: {c.channelId}</p>
-                              
-                              <div className="mt-3 flex flex-wrap gap-2">
-                                <span className="text-[10px] font-extrabold px-2 py-0.5 bg-indigo-50 text-indigo-700 rounded-full border border-indigo-100">
-                                  📁 {c.playlistsCount || 0} Playlists
-                                </span>
-                                <span className="text-[10px] font-extrabold px-2 py-0.5 bg-emerald-50 text-emerald-700 rounded-full border border-emerald-100">
-                                  🎥 {c.videosCount || 0} Videos Synced
-                                </span>
-                              </div>
-
-                              {c.batchIds && c.batchIds.length > 0 && (
-                                <div className="mt-2.5 flex flex-wrap gap-1 items-center">
-                                  <span className="text-[9px] font-extrabold text-slate-400 mr-0.5 uppercase tracking-wider">Batches:</span>
-                                  {c.batchIds.map((bid: string) => {
-                                    const batchName = batches.find((b) => b.id === bid)?.name || 'Unknown';
-                                    return (
-                                      <span key={bid} className="text-[9px] font-bold px-1.5 py-0.5 bg-slate-100 text-indigo-900 rounded border border-slate-200/60">
-                                        {batchName}
-                                      </span>
-                                    );
-                                  })}
-                                </div>
-                              )}
-                              
-                              <p className="text-[9px] font-semibold text-slate-400 mt-2">
-                                🕒 Last Synced: <span className="text-slate-600 font-bold">{c.lastSyncedAt ? new Date(c.lastSyncedAt).toLocaleString() : 'Never'}</span>
-                              </p>
-
-                              <p className="text-xs text-slate-500 mt-3 line-clamp-2">{c.description || 'No description provided.'}</p>
-
-                              {/* Real-time Progress Card */}
-                              {syncProgressMap[c.channelId] && (
-                                <div className={`border rounded-xl p-3.5 mt-3 ${
-                                  syncProgressMap[c.channelId].status === 'completed' ? 'bg-emerald-50/50 border-emerald-200' :
-                                  syncProgressMap[c.channelId].status === 'cancelled' ? 'bg-orange-50/50 border-orange-200' :
-                                  syncProgressMap[c.channelId].status === 'failed' ? 'bg-red-50/50 border-red-200' :
-                                  'bg-indigo-50/50 border-indigo-100/80 animate-pulse'
-                                }`}>
-                                  {/* Row 1: Stage label + badges */}
-                                  <div className="flex flex-wrap items-center justify-between gap-2 mb-2 pb-1 border-b border-indigo-100/50">
-                                    <div className="flex items-center gap-1.5 text-indigo-800 text-xs font-extrabold min-w-0">
-                                      {syncProgressMap[c.channelId].status === 'syncing' && (
-                                        <svg className="animate-spin h-3.5 w-3.5 text-indigo-600 shrink-0" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                                        </svg>
-                                      )}
-                                      <span className="truncate uppercase tracking-wider">
-                                        {syncProgressMap[c.channelId].status === 'completed' && '✅ SYNC COMPLETE'}
-                                        {syncProgressMap[c.channelId].status === 'cancelled' && '⛔ SYNC STOPPED'}
-                                        {syncProgressMap[c.channelId].status === 'failed' && '❌ SYNC FAILED'}
-                                        {syncProgressMap[c.channelId].status === 'syncing' && (
-                                          <>
-                                            {syncProgressMap[c.channelId].stage === 'fetching_playlists' && 'SCANNING PLAYLISTS'}
-                                            {syncProgressMap[c.channelId].stage === 'fetching_videos' && 'FETCHING NEW VIDEOS'}
-                                            {syncProgressMap[c.channelId].stage === 'fetching_durations' && 'DURATION ANALYSIS'}
-                                            {syncProgressMap[c.channelId].stage === 'saving_to_db' && 'DATABASE WRITEBACK'}
-                                            {(!syncProgressMap[c.channelId].stage || syncProgressMap[c.channelId].stage === 'initiating') && 'INITIATING...'}
-                                          </>
-                                        )}
-                                      </span>
-                                    </div>
-                                    <div className="flex items-center gap-1.5 shrink-0 ml-auto">
-                                      {/* Sync mode badge */}
-                                      {syncProgressMap[c.channelId].syncMode && (
-                                        <span className={`text-[8px] font-extrabold px-1.5 py-0.5 rounded tracking-wider uppercase ${
-                                          syncProgressMap[c.channelId].syncMode === 'INCREMENTAL'
-                                            ? 'bg-emerald-100 text-emerald-800'
-                                            : 'bg-amber-100 text-amber-800'
-                                        }`}>
-                                          {syncProgressMap[c.channelId].syncMode === 'INCREMENTAL' ? '⚡ INCREMENTAL' : '🔄 FULL SCAN'}
-                                        </span>
-                                      )}
-                                      <span className="bg-indigo-100 text-indigo-800 text-[8px] font-extrabold px-1.5 py-0.5 rounded tracking-wider uppercase">
-                                        {syncProgressMap[c.channelId].engine || 'LOCAL'}
-                                      </span>
-                                    </div>
-                                  </div>
-
-                                  {/* Since date for incremental */}
-                                  {syncProgressMap[c.channelId].sinceDate && (
-                                    <p className="text-[9px] text-slate-500 mb-2">
-                                      Checking videos since <span className="font-bold text-slate-700">{new Date(syncProgressMap[c.channelId].sinceDate).toLocaleString()}</span>
-                                    </p>
-                                  )}
-
-                                  {/* Progress bar */}
-                                  <div>
-                                    <div className="flex justify-between text-[10px] font-bold text-slate-600">
-                                      <span>Playlists: {syncProgressMap[c.channelId].playlistsProcessed}/{syncProgressMap[c.channelId].playlistsTotal || 1}</span>
-                                      {syncProgressMap[c.channelId].stage === 'saving_to_db' && (
-                                        <span className="text-amber-600 font-extrabold animate-pulse">Saving: {syncProgressMap[c.channelId].videosProcessed} synced</span>
-                                      )}
-                                    </div>
-                                    <div className="h-1.5 bg-slate-200 rounded-full overflow-hidden mt-1.5">
-                                      <div 
-                                        className={`h-full rounded-full transition-all duration-300 ${
-                                          syncProgressMap[c.channelId].status === 'completed' ? 'bg-emerald-500' :
-                                          syncProgressMap[c.channelId].status === 'cancelled' ? 'bg-orange-400' :
-                                          syncProgressMap[c.channelId].status === 'failed' ? 'bg-red-400' :
-                                          'bg-amber-500'
-                                        }`}
-                                        style={{ 
-                                          width: `${
-                                            syncProgressMap[c.channelId].status === 'completed' ? 100 :
-                                            syncProgressMap[c.channelId].playlistsTotal 
-                                              ? (syncProgressMap[c.channelId].playlistsProcessed / syncProgressMap[c.channelId].playlistsTotal) * 100 
-                                              : 10 
-                                          }%` 
-                                        }}
-                                      ></div>
-                                    </div>
-                                  </div>
-
-                                  {/* New videos count */}
-                                  <div className="text-emerald-700 text-[10px] font-medium flex items-center gap-1 mt-2">
-                                    <span>✓ {syncProgressMap[c.channelId].videosTotal || syncProgressMap[c.channelId].videosProcessed || 0} new video(s) found</span>
-                                  </div>
-                                </div>
-                              )}
-                            </div>
-                          </div>
-
-                          <div className="mt-4 pt-3 border-t border-slate-100 flex justify-between items-center">
-                            {syncingMap[c.channelId] ? (
-                              <button
-                                type="button"
-                                onClick={() => handleCancelSync(c.channelId)}
-                                className="text-xs font-bold text-red-500 hover:text-red-700 transition cursor-pointer flex items-center gap-1"
-                              >
-                                ⛔ Stop Sync
-                              </button>
-                            ) : (
-                              <button
-                                type="button"
-                                onClick={() => handleSyncYoutubeVideos(c.channelId)}
-                                className="text-xs font-bold text-emerald-600 hover:text-emerald-800 transition cursor-pointer"
-                              >
-                                Sync Playlists &amp; Videos
-                              </button>
-                            )}
-
-                            <div className="flex gap-2">
-                              <button
-                                type="button"
-                                onClick={() => startEditYoutubeChannel(c)}
-                                className="text-xs font-bold text-indigo-600 hover:text-indigo-800 transition cursor-pointer"
-                              >
-                                Edit
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => handleDeleteYoutubeChannel(c.channelId)}
-                                className="text-xs font-bold text-red-600 hover:text-red-800 transition cursor-pointer"
-                              >
-                                Delete
-                              </button>
-                            </div>
-                          </div>
-                        </Card>
-                      ))
-                    )}
-                  </div>
+                  {!editingChannelId ? (
+                    <button
+                      onClick={() => setShowLinkYtForm(!showLinkYtForm)}
+                      className={`text-xs px-3.5 py-2 rounded-xl font-bold transition-all duration-300 shadow-sm flex items-center gap-1.5 ${
+                        showLinkYtForm
+                          ? 'bg-rose-50 border border-rose-200 text-rose-600 hover:bg-rose-100'
+                          : 'bg-red-600 text-white hover:bg-red-700 hover:shadow-md'
+                      }`}
+                    >
+                      {showLinkYtForm ? 'Close Linking' : '➕ Link YouTube Channel'}
+                    </button>
+                  ) : (
+                    <span className="text-xs bg-amber-50 text-amber-700 border border-amber-250 font-black px-3 py-1.5 rounded-xl uppercase tracking-wider animate-pulse flex items-center gap-1">
+                      ⚡ Editing Channel
+                    </span>
+                  )}
                 </div>
 
-                <div>
-                  <div className="rounded-3xl border border-white bg-gradient-to-br from-red-50/50 to-white backdrop-blur-xl p-5 lg:p-6 shadow-[0_8px_30px_rgb(0,0,0,0.05)] relative overflow-hidden">
-                    <div className="absolute top-0 right-0 -mr-12 -mt-12 w-24 h-24 rounded-full bg-gradient-to-br from-red-200/50 to-rose-200/50 blur-xl pointer-events-none"></div>
-                    <h3 className="font-sans text-base font-black text-red-950 mb-4 flex items-center gap-2">
-                      <span>🔗</span> {editingChannelId ? 'Edit YouTube Channel' : 'Link YouTube Channel'}
-                    </h3>
-                    <form onSubmit={handleLinkYoutubeChannel} className="space-y-4 relative z-10">
-                      <FormField label="Channel ID" required>
+                <div className={showLinkYtForm ? "flex flex-col lg:grid gap-6 lg:grid-cols-3" : "w-full"}>
+                  {/* Left Column: Channels list */}
+                  <div className={showLinkYtForm ? "lg:col-span-2 space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500 order-last lg:order-first" : "w-full space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500"}>
+                    <div className={`grid gap-4 ${showLinkYtForm ? 'grid-cols-1 sm:grid-cols-2' : 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-3'}`}>
+                      {ytChannels.length === 0 ? (
+                        <div className={`${showLinkYtForm ? 'col-span-2' : 'col-span-full'} bg-gradient-to-br from-red-50/70 to-rose-50/40 backdrop-blur-xl rounded-3xl border border-white/80 p-10 text-center text-red-950/40 font-semibold italic text-sm shadow-[0_8px_30px_rgb(0,0,0,0.02)]`}>No YouTube channels linked to this center yet.</div>
+                      ) : (
+                        ytChannels.map((c) => (
+                          <Card key={c.id} className="p-4 hover:shadow-md transition relative flex flex-col justify-between border border-red-100/40 bg-white/90">
+                            <div className="flex gap-3 items-start">
+                              {c.thumbnail ? (
+                                <img
+                                  src={c.thumbnail}
+                                  alt={c.title}
+                                  className="h-12 w-12 rounded-full object-cover border border-slate-200 shrink-0"
+                                  onError={(e) => {
+                                    (e.target as HTMLImageElement).src = 'https://www.youtube.com/s/desktop/82d92138/img/logos/favicon_144x144.png';
+                                  }}
+                                />
+                              ) : (
+                                <div className="h-12 w-12 rounded-full bg-red-100 flex items-center justify-center text-red-600 font-extrabold text-sm shrink-0">
+                                  YT
+                                </div>
+                              )}
+                              <div className="flex-1 min-w-0">
+                                <div className="flex items-center gap-2 flex-wrap">
+                                  <h4 className="font-bold text-indigo-950 text-sm leading-tight">{c.title}</h4>
+                                  {syncProgressMap[c.channelId]?.status === 'syncing' && (
+                                    <span className="inline-flex items-center gap-0.5 bg-amber-50 text-amber-700 border border-amber-200 text-[9px] font-extrabold px-1.5 py-0.5 rounded animate-pulse">
+                                      ⚡ DEEP SYNCING
+                                    </span>
+                                  )}
+                                </div>
+                                <p className="text-[10px] text-slate-400 mt-0.5 select-all">ID: {c.channelId}</p>
+                                
+                                <div className="mt-3 flex flex-wrap gap-2">
+                                  <span className="text-[10px] font-extrabold px-2 py-0.5 bg-indigo-50 text-indigo-700 rounded-full border border-indigo-100">
+                                    📁 {c.playlistsCount || 0} Playlists
+                                  </span>
+                                  <span className="text-[10px] font-extrabold px-2 py-0.5 bg-emerald-50 text-emerald-700 rounded-full border border-emerald-100">
+                                    🎥 {c.videosCount || 0} Videos Synced
+                                  </span>
+                                </div>
+
+                                {c.batchIds && c.batchIds.length > 0 && (
+                                  <div className="mt-2.5 flex flex-wrap gap-1 items-center">
+                                    <span className="text-[9px] font-extrabold text-slate-400 mr-0.5 uppercase tracking-wider">Batches:</span>
+                                    {c.batchIds.map((bid: string) => {
+                                      const batchName = batches.find((b) => b.id === bid)?.name || 'Unknown';
+                                      return (
+                                        <span key={bid} className="text-[9px] font-bold px-1.5 py-0.5 bg-slate-100 text-indigo-900 rounded border border-slate-200/60">
+                                          {batchName}
+                                        </span>
+                                      );
+                                    })}
+                                  </div>
+                                )}
+                                
+                                <p className="text-[9px] font-semibold text-slate-400 mt-2">
+                                  🕒 Last Synced: <span className="text-slate-600 font-bold">{c.lastSyncedAt ? new Date(c.lastSyncedAt).toLocaleString() : 'Never'}</span>
+                                </p>
+
+                                <p className="text-xs text-slate-500 mt-3 line-clamp-2">{c.description || 'No description provided.'}</p>
+
+                                {/* Real-time Progress Card */}
+                                {syncProgressMap[c.channelId] && (
+                                  <div className={`border rounded-xl p-3.5 mt-3 ${
+                                    syncProgressMap[c.channelId].status === 'completed' ? 'bg-emerald-50/50 border-emerald-200' :
+                                    syncProgressMap[c.channelId].status === 'cancelled' ? 'bg-orange-50/50 border-orange-200' :
+                                    syncProgressMap[c.channelId].status === 'failed' ? 'bg-red-50/50 border-red-200' :
+                                    'bg-indigo-50/50 border-indigo-100/80 animate-pulse'
+                                  }`}>
+                                    {/* Row 1: Stage label + badges */}
+                                    <div className="flex flex-wrap items-center justify-between gap-2 mb-2 pb-1 border-b border-indigo-100/50">
+                                      <div className="flex items-center gap-1.5 text-indigo-800 text-xs font-extrabold min-w-0">
+                                        {syncProgressMap[c.channelId].status === 'syncing' && (
+                                          <svg className="animate-spin h-3.5 w-3.5 text-indigo-600 shrink-0" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                          </svg>
+                                        )}
+                                        <span className="truncate uppercase tracking-wider">
+                                          {syncProgressMap[c.channelId].status === 'completed' && '✅ SYNC COMPLETE'}
+                                          {syncProgressMap[c.channelId].status === 'cancelled' && '⛔ SYNC STOPPED'}
+                                          {syncProgressMap[c.channelId].status === 'failed' && '❌ SYNC FAILED'}
+                                          {syncProgressMap[c.channelId].status === 'syncing' && (
+                                            <>
+                                              {syncProgressMap[c.channelId].stage === 'fetching_playlists' && 'SCANNING PLAYLISTS'}
+                                              {syncProgressMap[c.channelId].stage === 'fetching_videos' && 'FETCHING NEW VIDEOS'}
+                                              {syncProgressMap[c.channelId].stage === 'fetching_durations' && 'DURATION ANALYSIS'}
+                                              {syncProgressMap[c.channelId].stage === 'saving_to_db' && 'DATABASE WRITEBACK'}
+                                              {(!syncProgressMap[c.channelId].stage || syncProgressMap[c.channelId].stage === 'initiating') && 'INITIATING...'}
+                                            </>
+                                          )}
+                                        </span>
+                                      </div>
+                                      <div className="flex items-center gap-1.5 shrink-0 ml-auto">
+                                        {/* Sync mode badge */}
+                                        {syncProgressMap[c.channelId].syncMode && (
+                                          <span className={`text-[8px] font-extrabold px-1.5 py-0.5 rounded tracking-wider uppercase ${
+                                            syncProgressMap[c.channelId].syncMode === 'INCREMENTAL'
+                                              ? 'bg-emerald-100 text-emerald-800'
+                                              : 'bg-amber-100 text-amber-800'
+                                          }`}>
+                                            {syncProgressMap[c.channelId].syncMode === 'INCREMENTAL' ? '⚡ INCREMENTAL' : '🔄 FULL SCAN'}
+                                          </span>
+                                        )}
+                                        <span className="bg-indigo-100 text-indigo-800 text-[8px] font-extrabold px-1.5 py-0.5 rounded tracking-wider uppercase">
+                                          {syncProgressMap[c.channelId].engine || 'LOCAL'}
+                                        </span>
+                                      </div>
+                                    </div>
+
+                                    {/* Since date for incremental */}
+                                    {syncProgressMap[c.channelId].sinceDate && (
+                                      <p className="text-[9px] text-slate-500 mb-2">
+                                        Checking videos since <span className="font-bold text-slate-700">{new Date(syncProgressMap[c.channelId].sinceDate).toLocaleString()}</span>
+                                      </p>
+                                    )}
+
+                                    {/* Progress bar */}
+                                    <div>
+                                      <div className="flex justify-between text-[10px] font-bold text-slate-600">
+                                        <span>Playlists: {syncProgressMap[c.channelId].playlistsProcessed}/{syncProgressMap[c.channelId].playlistsTotal || 1}</span>
+                                        {syncProgressMap[c.channelId].stage === 'saving_to_db' && (
+                                          <span className="text-amber-600 font-extrabold animate-pulse">Saving: {syncProgressMap[c.channelId].videosProcessed} synced</span>
+                                        )}
+                                      </div>
+                                      <div className="h-1.5 bg-slate-200 rounded-full overflow-hidden mt-1.5">
+                                        <div 
+                                          className={`h-full rounded-full transition-all duration-300 ${
+                                            syncProgressMap[c.channelId].status === 'completed' ? 'bg-emerald-500' :
+                                            syncProgressMap[c.channelId].status === 'cancelled' ? 'bg-orange-400' :
+                                            syncProgressMap[c.channelId].status === 'failed' ? 'bg-red-400' :
+                                            'bg-amber-500'
+                                          }`}
+                                          style={{ 
+                                            width: `${
+                                              syncProgressMap[c.channelId].status === 'completed' ? 100 :
+                                              syncProgressMap[c.channelId].playlistsTotal 
+                                                ? (syncProgressMap[c.channelId].playlistsProcessed / syncProgressMap[c.channelId].playlistsTotal) * 100 
+                                                : 10 
+                                            }%` 
+                                          }}
+                                        ></div>
+                                      </div>
+                                    </div>
+
+                                    {/* New videos count */}
+                                    <div className="text-emerald-700 text-[10px] font-medium flex items-center gap-1 mt-2">
+                                      <span>✓ {syncProgressMap[c.channelId].videosTotal || syncProgressMap[c.channelId].videosProcessed || 0} new video(s) found</span>
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+
+                            <div className="mt-4 pt-3 border-t border-slate-100 flex justify-between items-center">
+                              {syncingMap[c.channelId] ? (
+                                <button
+                                  type="button"
+                                  onClick={() => handleCancelSync(c.channelId)}
+                                  className="text-xs font-bold text-red-500 hover:text-red-700 transition cursor-pointer flex items-center gap-1"
+                                >
+                                  ⛔ Stop Sync
+                                </button>
+                              ) : (
+                                <button
+                                  type="button"
+                                  onClick={() => handleSyncYoutubeVideos(c.channelId)}
+                                  className="text-xs font-bold text-emerald-600 hover:text-emerald-800 transition cursor-pointer"
+                                >
+                                  Sync Playlists &amp; Videos
+                                </button>
+                              )}
+
+                              <div className="flex gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => startEditYoutubeChannel(c)}
+                                  className="text-xs font-bold text-indigo-600 hover:text-indigo-800 transition cursor-pointer"
+                                >
+                                  Edit
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleDeleteYoutubeChannel(c.channelId)}
+                                  className="text-xs font-bold text-red-600 hover:text-red-800 transition cursor-pointer"
+                                >
+                                  Delete
+                                </button>
+                              </div>
+                            </div>
+                          </Card>
+                        ))
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Right Column: Link YouTube Channel Form */}
+                  {showLinkYtForm && (
+                    <div className="lg:col-span-1 animate-in fade-in slide-in-from-right-4 duration-500 order-first lg:order-last">
+                      <div className="rounded-3xl border border-white bg-gradient-to-br from-red-50/50 to-white backdrop-blur-xl p-5 lg:p-6 shadow-[0_8px_30px_rgb(0,0,0,0.05)] relative overflow-hidden">
+                        <div className="absolute top-0 right-0 -mr-12 -mt-12 w-24 h-24 rounded-full bg-gradient-to-br from-red-200/50 to-rose-200/50 blur-xl pointer-events-none"></div>
+                        <div className="flex items-center justify-between gap-2 mb-4 relative z-10">
+                          <h3 className="font-sans text-base font-black text-red-950 flex items-center gap-2">
+                            <span>🔗</span> {editingChannelId ? 'Edit YouTube Channel' : 'Link YouTube Channel'}
+                          </h3>
+                          <button
+                            type="button"
+                            onClick={cancelEditYoutubeChannel}
+                            className="text-slate-400 hover:text-slate-650 font-extrabold text-sm w-7 h-7 rounded-full bg-slate-100 flex items-center justify-center transition-colors cursor-pointer"
+                          >
+                            ✕
+                          </button>
+                        </div>
+                        <form onSubmit={handleLinkYoutubeChannel} className="space-y-4 relative z-10">
+                          {/* Step-by-Step Guide Accordion */}
+                          <div className="bg-gradient-to-br from-red-50/50 to-orange-50/30 border border-red-100/70 rounded-2xl p-2.5 text-[11px] leading-relaxed">
+                            <button
+                              type="button"
+                              onClick={() => setShowYtHelpGuide(!showYtHelpGuide)}
+                              className="w-full flex items-center justify-between font-black text-red-950 hover:text-red-800 transition-colors cursor-pointer text-left focus:outline-none"
+                            >
+                              <span className="flex items-center gap-1.5">
+                                <span>💡</span> How to Find your Channel ID:
+                              </span>
+                              <span className="text-[9px] text-slate-400 font-extrabold select-none">
+                                {showYtHelpGuide ? 'Hide Info ▲' : 'Show Guide ▼'}
+                              </span>
+                            </button>
+                            {showYtHelpGuide && (
+                              <div className="space-y-1.5 text-slate-600 font-semibold mt-2 pt-2 border-t border-red-100/50 animate-in fade-in slide-in-from-top-1 duration-200">
+                                <p className="flex items-start gap-1">
+                                  <span className="text-red-500 font-bold">1.</span>
+                                  <span>
+                                    Open{' '}
+                                    <a 
+                                      href="https://www.fazeelazeez.in/channel-finder" 
+                                      target="_blank" 
+                                      rel="noopener noreferrer" 
+                                      className="text-red-650 underline hover:text-red-800 transition-colors font-black"
+                                    >
+                                      Fazeel Azeez Finder
+                                    </a>{' '}
+                                    or{' '}
+                                    <a 
+                                      href="https://views4you.com/tools/youtube-channel-id-finder/" 
+                                      target="_blank" 
+                                      rel="noopener noreferrer" 
+                                      className="text-red-650 underline hover:text-red-800 transition-colors font-black"
+                                    >
+                                      Views4You Finder
+                                    </a>.
+                                  </span>
+                                </p>
+                                <p className="flex items-start gap-1">
+                                  <span className="text-red-500 font-bold">2.</span>
+                                  <span>Paste the target channel's YouTube URL.</span>
+                                </p>
+                                <p className="flex items-start gap-1">
+                                  <span className="text-red-500 font-bold">3.</span>
+                                  <span>Copy the 24-character ID starting with <code>UC</code> and paste it in the field below.</span>
+                                </p>
+                              </div>
+                            )}
+                          </div>
+
+                          <FormField label="Channel ID" required>
                         <input
                           type="text"
                           required
@@ -2587,8 +3144,8 @@ function CenterContent() {
                             className="input-devotional text-sm py-2 bg-white shadow-sm border-slate-200 focus:border-red-500 focus:ring-red-200"
                             placeholder="https://example.com/photo.jpg or upload below"
                           />
-                          <div className="flex gap-2 items-center flex-wrap">
-                            <label className="btn-outline px-3 py-1.5 text-xs font-bold bg-white cursor-pointer select-none border-slate-200 text-slate-700 hover:bg-slate-50">
+                          <div className="grid grid-cols-2 gap-2">
+                            <label className="btn-outline px-1.5 py-1.5 text-[10px] font-extrabold bg-white cursor-pointer select-none border-slate-200 text-slate-700 hover:bg-slate-50 flex items-center justify-center gap-1 w-full whitespace-nowrap">
                               📁 Upload Photo
                               <input
                                 type="file"
@@ -2623,12 +3180,12 @@ function CenterContent() {
                             <button
                               type="button"
                               onClick={() => setShowLibraryModal(true)}
-                              className="btn-outline px-3 py-1.5 text-xs font-bold bg-white border-slate-200 text-slate-700 hover:bg-slate-50"
+                              className="btn-outline px-1.5 py-1.5 text-[10px] font-extrabold bg-white border-slate-200 text-slate-700 hover:bg-slate-50 flex items-center justify-center gap-1 w-full whitespace-nowrap"
                             >
                               🖼️ Media Library
                             </button>
                             {isUploading && (
-                              <span className="text-xs font-bold text-red-500 animate-pulse bg-red-50 px-2 py-1 rounded">Uploading...</span>
+                              <span className="col-span-2 text-xs font-bold text-red-500 animate-pulse bg-red-50 px-2 py-1 rounded text-center">Uploading...</span>
                             )}
                           </div>
                           {ytChanThumb && (
@@ -2691,8 +3248,10 @@ function CenterContent() {
                     </form>
                   </div>
                 </div>
-              </div>
-            )}
+              )}
+            </div>
+          </div>
+        )}
 
             {/* Tab: Reports */}
             {activeTab === 'reports' && (
@@ -2750,6 +3309,14 @@ function CenterContent() {
                   </div>
                 </div>
               </div>
+            )}
+
+            {/* Tab: Edit Profile */}
+            {activeTab === 'profile' && user && (
+              <EditProfileTab
+                user={user}
+                onProfileUpdated={(updated) => setUser((u: any) => u ? { ...u, ...updated } : u)}
+              />
             )}
           </div>
         )}
@@ -3049,6 +3616,198 @@ function CenterContent() {
           </div>
         )}
       </PageShell>
+
+      {/* ── Console Mobile Bottom Tab Bar (hidden on md+) ── */}
+      {renderAsAdmin && (
+        <nav className="fixed bottom-0 left-0 right-0 z-50 md:hidden bg-white/95 backdrop-blur-2xl border-t border-white/60 shadow-[0_-8px_30px_rgba(0,0,0,0.12)] safe-bottom">
+          <div className="flex items-stretch h-16">
+            {/* Link back to Dashboard */}
+            <Link
+              href="/dashboard"
+              className="flex-1 flex flex-col items-center justify-center gap-0.5 relative cursor-pointer transition-all active:scale-95 text-slate-400 no-underline"
+            >
+              <span className="w-10 h-7 rounded-xl flex items-center justify-center text-lg">
+                🏠
+              </span>
+              <span className="text-[9px] font-black uppercase tracking-wide leading-none">
+                Dashboard
+              </span>
+            </Link>
+
+            {[
+              { id: 'overview', label: 'Overview', icon: '📊', color: 'from-indigo-500 to-purple-600' },
+              { id: 'members', label: 'Students', icon: '👥', color: 'from-emerald-500 to-teal-600' },
+              { id: 'batches', label: 'Classrooms', icon: '🏫', color: 'from-pink-500 to-rose-600' },
+              { id: 'youtube', label: 'YouTube', icon: '🎥', color: 'from-red-500 to-rose-600' },
+            ].map((tab) => {
+              const isActive = activeTab === tab.id;
+              return (
+                <button
+                  key={tab.id}
+                  onClick={() => {
+                    setActiveTab(tab.id);
+                    setSelectedManageCourse(null);
+                    setSelectedManageBatch(null);
+                    setSelectedManageTest(null);
+                    cancelEditYoutubeChannel();
+                  }}
+                  className="flex-1 flex flex-col items-center justify-center gap-0.5 relative cursor-pointer transition-all active:scale-95 border-0 bg-transparent"
+                >
+                  {/* Active indicator bar at top */}
+                  {isActive && (
+                    <span className={`absolute top-0 left-1/4 right-1/4 h-0.5 rounded-full bg-gradient-to-r ${tab.color}`} />
+                  )}
+                  {/* Icon bubble */}
+                  <span className={`w-10 h-7 rounded-xl flex items-center justify-center text-lg transition-all ${
+                    isActive
+                      ? `bg-gradient-to-br ${tab.color} text-white shadow-md scale-110`
+                      : 'scale-100 text-slate-500'
+                  }`}>
+                    {tab.icon}
+                  </span>
+                  {/* Label */}
+                  <span className={`text-[9px] font-black uppercase tracking-wide leading-none ${
+                    isActive ? 'text-indigo-700' : 'text-slate-400'
+                  }`}>
+                    {tab.label}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </nav>
+      )}
+    </div>
+  );
+}
+
+// ─── Edit Profile Tab ─────────────────────────────────────────────────────────
+function EditProfileTab({ user, onProfileUpdated }: { user: User; onProfileUpdated: (u: Partial<User>) => void }) {
+  const [firstName, setFirstName] = useState(user.firstName);
+  const [lastName, setLastName] = useState(user.lastName);
+  const [phone, setPhone] = useState(user.phone || '');
+  const [currentPassword, setCurrentPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [showPw, setShowPw] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [msg, setMsg] = useState('');
+  const [msgType, setMsgType] = useState<'success' | 'error' | ''>('');
+
+  async function handleSaveProfile(e: FormEvent) {
+    e.preventDefault();
+    setSaving(true); setMsg('');
+    try {
+      await api('/auth/me/profile', { method: 'PATCH', body: JSON.stringify({ firstName, lastName, phone }) });
+      setMsg('Profile updated successfully!'); setMsgType('success');
+      onProfileUpdated({ firstName, lastName, phone });
+    } catch (err: any) {
+      setMsg(err.message || 'Failed to update profile.'); setMsgType('error');
+    } finally { setSaving(false); }
+  }
+
+  async function handleChangePassword(e: FormEvent) {
+    e.preventDefault();
+    if (newPassword !== confirmPassword) { setMsg('New passwords do not match.'); setMsgType('error'); return; }
+    if (newPassword.length < 8) { setMsg('Password must be at least 8 characters.'); setMsgType('error'); return; }
+    setSaving(true); setMsg('');
+    try {
+      await api('/auth/me/password', { method: 'PATCH', body: JSON.stringify({ currentPassword, newPassword }) });
+      setMsg('Password changed successfully!'); setMsgType('success');
+      setCurrentPassword(''); setNewPassword(''); setConfirmPassword('');
+    } catch (err: any) {
+      setMsg(err.message || 'Failed to change password.'); setMsgType('error');
+    } finally { setSaving(false); }
+  }
+
+  return (
+    <div className="space-y-4">
+      {msg && (
+        <div className={`p-3 rounded-xl text-sm font-semibold border ${
+          msgType === 'success' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-red-50 text-red-700 border-red-200'
+        }`}>
+          {msg}
+        </div>
+      )}
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+        {/* Personal Information Card */}
+        <Card className="p-6 bg-white">
+          <h3 className="font-extrabold text-indigo-950 text-base mb-5 flex items-center gap-2">
+            <span className="text-xl">👤</span> Personal Information
+          </h3>
+          <form onSubmit={handleSaveProfile} className="space-y-4">
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1">
+                <label className="text-xs font-bold text-slate-600">First Name *</label>
+                <input required value={firstName} onChange={(e) => setFirstName(e.target.value)} className="input-devotional" />
+              </div>
+              <div className="space-y-1">
+                <label className="text-xs font-bold text-slate-600">Last Name *</label>
+                <input required value={lastName} onChange={(e) => setLastName(e.target.value)} className="input-devotional" />
+              </div>
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs font-bold text-slate-600">Email Address</label>
+              <input type="email" value={user.email} disabled className="input-devotional opacity-50 cursor-not-allowed bg-slate-50" />
+              <p className="text-[10px] text-slate-400">Email address cannot be changed.</p>
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs font-bold text-slate-600">Phone Number</label>
+              <input type="tel" value={phone} onChange={(e) => setPhone(e.target.value)} className="input-devotional" placeholder="+91 98765 43210" />
+            </div>
+            <button type="submit" disabled={saving} className="btn-primary px-6 py-2.5 text-sm">
+              {saving ? 'Saving...' : '💾 Save Profile'}
+            </button>
+          </form>
+        </Card>
+
+        {/* Change Password Card */}
+        <Card className="p-6 bg-white">
+          <h3 className="font-extrabold text-indigo-950 text-base mb-5 flex items-center gap-2">
+            <span className="text-xl">🔐</span> Change Password
+          </h3>
+          <form onSubmit={handleChangePassword} className="space-y-4">
+            <div className="space-y-1">
+              <label className="text-xs font-bold text-slate-600">Current Password *</label>
+              <div className="relative">
+                <input type={showPw ? 'text' : 'password'} required value={currentPassword} onChange={(e) => setCurrentPassword(e.target.value)} className="input-devotional pr-10" />
+                <button type="button" onClick={() => setShowPw(!showPw)} className="absolute inset-y-0 right-0 pr-3 flex items-center text-slate-400 hover:text-slate-600 text-sm">
+                  {showPw ? '👁️' : '👁️‍🗨️'}
+                </button>
+              </div>
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs font-bold text-slate-600">New Password *</label>
+              <input type="password" required minLength={8} value={newPassword} onChange={(e) => setNewPassword(e.target.value)} className="input-devotional" placeholder="Min 8 characters" />
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs font-bold text-slate-600">Confirm New Password *</label>
+              <input type="password" required minLength={8} value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} className="input-devotional" placeholder="Min 8 characters" />
+            </div>
+            <button type="submit" disabled={saving} className="btn-primary px-6 py-2.5 text-sm">
+              {saving ? 'Saving...' : '🔑 Update Password'}
+            </button>
+          </form>
+        </Card>
+        {/* Join Another Center Card */}
+        <Card className="p-6 bg-gradient-to-br from-indigo-50/50 to-white border border-indigo-100 flex flex-col justify-between min-h-[220px]">
+          <div>
+            <h3 className="font-extrabold text-indigo-950 text-base mb-2 flex items-center gap-2">
+              <span className="text-xl">🏫</span> Join Another Center
+            </h3>
+            <p className="text-xs text-slate-500 leading-relaxed font-medium">
+              Want to enroll in classes offered by a different center or college? Click below to enter their unique join code and submit your student entry request.
+            </p>
+          </div>
+          <Link
+            href="/dashboard?tab=profile&join=true"
+            className="btn-outline border-indigo-200 hover:border-indigo-300 text-indigo-700 hover:bg-indigo-50/50 transition-all text-xs font-black py-3 px-5 rounded-xl uppercase tracking-wider mt-4 w-fit flex items-center gap-2 cursor-pointer no-underline text-center"
+          >
+            <span>➕</span> Request Center Entry
+          </Link>
+        </Card>
+      </div>
     </div>
   );
 }

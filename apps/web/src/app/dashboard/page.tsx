@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback, useRef, FormEvent, Suspense } from 'react';
 import { useRouter, useSearchParams, usePathname } from 'next/navigation';
+import Link from 'next/link';
 import { getMe, logout } from '@/lib/auth';
 import { api } from '@/lib/api';
 import { Navbar } from '@/components/Navbar';
@@ -92,46 +93,174 @@ function formatDuration(seconds?: number) {
 }
 
 // ─── Pending Approval Screen ──────────────────────────────────────────────────
-function PendingApprovalScreen({ user, pendingMemberships, onLogout }: {
-  user: User; pendingMemberships: CenterMembership[]; onLogout: () => void;
+function PendingApprovalScreen({ user, pendingMemberships, onLogout, onRefresh }: {
+  user: User; pendingMemberships: CenterMembership[]; onLogout: () => void; onRefresh: () => void;
 }) {
+  const [code, setCode] = useState('');
+  const [verifying, setVerifying] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [centerData, setCenterData] = useState<any>(null);
+  const [selectedBatchId, setSelectedBatchId] = useState('');
+  const [errorMsg, setErrorMsg] = useState('');
+
+  // Auto-verify code when it reaches 8 characters (e.g. VS-XXXXXX)
+  useEffect(() => {
+    const clean = code.trim().toUpperCase();
+    if (clean.length >= 8) {
+      setVerifying(true);
+      setErrorMsg('');
+      api<any>(`/centers/by-code/${clean}`)
+        .then((data) => {
+          setCenterData(data);
+          if (data.batches && data.batches.length > 0) {
+            setSelectedBatchId(data.batches[0].id);
+          }
+        })
+        .catch((err) => {
+          setErrorMsg(err.message || 'Invalid join code');
+          setCenterData(null);
+        })
+        .finally(() => setVerifying(false));
+    } else {
+      setCenterData(null);
+      setErrorMsg('');
+    }
+  }, [code]);
+
+  async function handleJoinSubmit(e: FormEvent) {
+    e.preventDefault();
+    if (!centerData || submitting) return;
+    setSubmitting(true);
+    setErrorMsg('');
+    try {
+      await api('/centers/join-by-code', {
+        method: 'POST',
+        body: JSON.stringify({
+          code: code.trim().toUpperCase(),
+          batchId: selectedBatchId || undefined,
+        }),
+      });
+      setCode('');
+      setCenterData(null);
+      onRefresh();
+    } catch (err: any) {
+      setErrorMsg(err.message || 'Failed to submit request');
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
   return (
-    <div className="min-h-screen flex flex-col items-center justify-center bg-gradient-to-br from-violet-600 via-indigo-700 to-indigo-900 px-4 relative overflow-hidden">
+    <div className="min-h-screen flex flex-col items-center justify-center bg-gradient-to-br from-violet-600 via-indigo-700 to-indigo-900 px-4 py-10 relative overflow-hidden">
       <div className="absolute top-10 left-10 w-72 h-72 rounded-full bg-white/5 blur-[100px] pointer-events-none"></div>
       <div className="absolute bottom-10 right-10 w-96 h-96 rounded-full bg-fuchsia-500/10 blur-[120px] pointer-events-none"></div>
       <div className="max-w-md w-full text-center space-y-6 relative z-10">
-        <div className="w-24 h-24 rounded-full bg-amber-400/20 border-2 border-amber-300/30 flex items-center justify-center mx-auto shadow-2xl backdrop-blur-md">
-          <span className="text-5xl">⏳</span>
+        
+        {/* State Icon */}
+        <div className="w-20 h-20 rounded-full bg-amber-400/20 border-2 border-amber-300/30 flex items-center justify-center mx-auto shadow-2xl backdrop-blur-md">
+          <span className="text-4xl">{pendingMemberships.length > 0 ? '⏳' : '🔑'}</span>
         </div>
+        
         <div>
-          <h1 className="text-3xl font-black text-white">Approval Pending</h1>
-          <p className="mt-2 text-white/70 leading-relaxed text-sm">
-            Hi <strong className="text-white">{user.firstName}</strong>! Your registration has been received. Waiting for admin approval.
+          <h1 className="text-2xl lg:text-3xl font-black text-white">
+            {pendingMemberships.length > 0 ? 'Approval Pending' : 'Join a Center'}
+          </h1>
+          <p className="mt-2 text-white/70 leading-relaxed text-xs lg:text-sm">
+            Hi <strong className="text-white">{user.firstName}</strong>! 
+            {pendingMemberships.length > 0 
+              ? ' Your registration has been received and is waiting for approval.' 
+              : ' Enter your unique class join code below to request access.'}
           </p>
         </div>
-        <div className="space-y-3">
-          {pendingMemberships.map((m) => (
-            <div key={m.id} className="bg-white/10 border border-white/20 backdrop-blur-md rounded-2xl p-4 text-left">
-              <div className="flex items-center gap-3">
-                <span className="text-2xl">🏫</span>
-                <div>
-                  <p className="font-bold text-white">{m.center.name}</p>
-                  {m.batchMemberships.length > 0 && (
-                    <p className="text-xs text-white/60 mt-0.5">Group: {m.batchMemberships.map((bm) => bm.batch.name).join(', ')}</p>
-                  )}
+
+        {/* Pending Requests List */}
+        {pendingMemberships.length > 0 && (
+          <div className="space-y-3">
+            <p className="text-[10px] font-black uppercase text-white/40 tracking-wider text-left px-1">Your Pending Requests</p>
+            {pendingMemberships.map((m) => (
+              <div key={m.id} className="bg-white/10 border border-white/20 backdrop-blur-md rounded-2xl p-4 text-left">
+                <div className="flex items-center gap-3">
+                  <span className="text-xl">🏫</span>
+                  <div className="min-w-0 flex-1">
+                    <p className="font-bold text-white truncate">{m.center.name}</p>
+                    {m.batchMemberships && m.batchMemberships.length > 0 && (
+                      <p className="text-[10px] text-white/60 mt-0.5 truncate">
+                        Group: {m.batchMemberships.map((bm) => bm.batch.name).join(', ')}
+                      </p>
+                    )}
+                  </div>
+                  <span className="shrink-0 text-[9px] font-black px-2 py-0.5 rounded-full bg-amber-400/20 text-amber-300 border border-amber-400/30 uppercase">Pending</span>
                 </div>
-                <span className="ml-auto text-[10px] font-black px-2.5 py-1 rounded-full bg-amber-400/20 text-amber-300 border border-amber-400/30 uppercase">Pending</span>
               </div>
+            ))}
+          </div>
+        )}
+
+        {/* Join Center Form */}
+        <div className="bg-white/10 border border-white/20 backdrop-blur-md rounded-2xl p-5 text-left space-y-4">
+          <p className="text-[10px] font-black uppercase text-white/40 tracking-wider">Request Entry</p>
+          <form onSubmit={handleJoinSubmit} className="space-y-3.5">
+            {errorMsg && (
+              <div className="p-2.5 rounded-xl bg-rose-500/20 border border-rose-500/30 text-rose-200 text-xs font-semibold">
+                ⚠️ {errorMsg}
+              </div>
+            )}
+            
+            <div className="space-y-1">
+              <label className="text-[10px] font-black uppercase text-white/60 tracking-wider">Join Code</label>
+              <input
+                type="text"
+                required
+                placeholder="e.g. VS-XXXXXX"
+                value={code}
+                onChange={(e) => setCode(e.target.value)}
+                className="w-full bg-white/10 border border-white/20 rounded-xl px-4 py-2.5 text-sm font-black text-white tracking-widest placeholder-white/40 uppercase focus:outline-none focus:ring-2 focus:ring-amber-300"
+              />
             </div>
-          ))}
-          {pendingMemberships.length === 0 && (
-            <div className="bg-white/10 border border-white/20 backdrop-blur-md rounded-2xl p-6">
-              <p className="text-sm text-white/60">You have not joined any center yet.</p>
-            </div>
-          )}
+
+            {verifying && (
+              <p className="text-[10px] text-white/50 font-bold italic animate-pulse">Checking join code...</p>
+            )}
+
+            {centerData && (
+              <div className="space-y-3 p-3 bg-white/5 border border-white/10 rounded-xl animate-in fade-in slide-in-from-top-2 duration-200">
+                <p className="text-xs font-black text-amber-300">🏫 Center: {centerData.name}</p>
+                
+                {centerData.batches && centerData.batches.length > 0 ? (
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-black uppercase text-white/60 tracking-wider">Select Group / Classroom</label>
+                    <select
+                      value={selectedBatchId}
+                      onChange={(e) => setSelectedBatchId(e.target.value)}
+                      className="w-full bg-slate-900 border border-white/20 rounded-xl px-3 py-2 text-xs font-bold text-white focus:outline-none focus:ring-2 focus:ring-amber-300 cursor-pointer"
+                    >
+                      {centerData.batches.map((b: any) => (
+                        <option key={b.id} value={b.id}>{b.name}</option>
+                      ))}
+                    </select>
+                  </div>
+                ) : (
+                  <p className="text-[10px] text-rose-300 font-bold">No batches available in this center.</p>
+                )}
+              </div>
+            )}
+
+            <button
+              type="submit"
+              disabled={!centerData || submitting}
+              className={`w-full py-2.5 rounded-xl text-xs font-black uppercase tracking-wider transition-all duration-300 shadow-md cursor-pointer ${
+                centerData && !submitting
+                  ? 'bg-amber-400 hover:bg-amber-500 text-indigo-950 hover:shadow-lg'
+                  : 'bg-white/10 text-white/30 cursor-not-allowed border border-white/10'
+              }`}
+            >
+              {submitting ? 'Submitting Request...' : '🔑 Request Entry'}
+            </button>
+          </form>
         </div>
+
         <p className="text-xs text-white/40">Please check back later or contact your center admin.</p>
-        <button onClick={onLogout} className="rounded-2xl bg-white/20 hover:bg-white/30 border border-white/30 text-white font-bold px-6 py-2.5 text-sm transition cursor-pointer backdrop-blur-md">Logout</button>
+        <button onClick={onLogout} className="rounded-xl bg-white/20 hover:bg-white/30 border border-white/30 text-white font-bold px-6 py-2.5 text-sm transition cursor-pointer backdrop-blur-md">Logout</button>
       </div>
     </div>
   );
@@ -369,8 +498,8 @@ function VideosTab({ centerId, onBack }: { centerId: string; onBack: () => void 
   const origin = typeof window !== 'undefined' ? window.location.origin : '';
 
   return (
-    <div className="fixed top-16 bottom-16 md:bottom-0 left-0 md:left-56 lg:left-64 right-0 z-30 bg-slate-950 text-white overflow-hidden select-none flex items-center justify-center">
-      <div className="relative w-full h-full max-h-screen md:max-h-[85vh] aspect-[9/16] md:rounded-3xl overflow-hidden shadow-2xl bg-black border border-white/5">
+    <div className="fixed md:relative top-16 md:top-0 bottom-16 md:bottom-0 left-0 right-0 z-30 md:z-10 bg-slate-950 text-white overflow-hidden select-none flex items-center justify-center md:h-[80vh] md:w-full md:rounded-3xl shadow-xl">
+      <div className="relative w-full h-full max-h-screen md:max-h-[85vh] md:w-auto md:aspect-[9/16] md:rounded-3xl overflow-hidden shadow-2xl bg-black border border-white/5">
         <div
           ref={containerRef}
           onScroll={handleScroll}
@@ -481,7 +610,7 @@ function VideosTab({ centerId, onBack }: { centerId: string; onBack: () => void 
 }
 
 // ─── YouTube Channels Tab ──────────────────────────────────────────────────────
-function YoutubeChannelsTab({ centerId, batchId }: { centerId: string; batchId?: string }) {
+function YoutubeChannelsTab({ centerId, batchId, isAdmin }: { centerId: string; batchId?: string; isAdmin?: boolean }) {
   const router = useRouter();
   const searchParams = useSearchParams();
   const pathname = usePathname();
@@ -565,7 +694,7 @@ function YoutubeChannelsTab({ centerId, batchId }: { centerId: string; batchId?:
   }, [selectedChannel?.id, selectedPlaylist?.id, searchQuery]);
 
   useEffect(() => {
-    const url = `/centers/${centerId}/youtube/channels${batchId ? `?batchId=${batchId}` : ''}`;
+    const url = `/centers/${centerId}/youtube/channels${(batchId && !isAdmin) ? `?batchId=${batchId}` : ''}`;
     api<YoutubeChannel[]>(url).then((data) => {
       const libraryChannel: YoutubeChannel = {
         id: 'library',
@@ -579,7 +708,7 @@ function YoutubeChannelsTab({ centerId, batchId }: { centerId: string; batchId?:
       };
       setChannels([libraryChannel, ...data]);
     }).finally(() => setLoading(false));
-  }, [centerId, batchId]);
+  }, [centerId, batchId, isAdmin]);
 
   useEffect(() => {
     if (!selectedChannel) { setVideos([]); setIsPlayingLive(false); return; }
@@ -1199,7 +1328,7 @@ function ProgressTab({ centerId }: { centerId: string }) {
 }
 
 // ─── Edit Profile Tab ─────────────────────────────────────────────────────────
-function EditProfileTab({ user, onProfileUpdated }: { user: User; onProfileUpdated: (u: Partial<User>) => void }) {
+function EditProfileTab({ user, onProfileUpdated, onJoinClick }: { user: User; onProfileUpdated: (u: Partial<User>) => void; onJoinClick: () => void }) {
   const [firstName, setFirstName] = useState(user.firstName);
   const [lastName, setLastName] = useState(user.lastName);
   const [phone, setPhone] = useState(user.phone || '');
@@ -1307,6 +1436,24 @@ function EditProfileTab({ user, onProfileUpdated }: { user: User; onProfileUpdat
             </button>
           </form>
         </Card>
+
+        {/* Join Another Center Card */}
+        <Card className="p-6 bg-gradient-to-br from-indigo-50/50 to-white border border-indigo-100 flex flex-col justify-between min-h-[220px]">
+          <div>
+            <h3 className="font-extrabold text-indigo-950 text-base mb-2 flex items-center gap-2">
+              <span className="text-xl">🏫</span> Join Another Center
+            </h3>
+            <p className="text-xs text-slate-500 leading-relaxed font-medium">
+              Want to enroll in classes offered by a different center or college? Click below to enter their unique join code and submit your student entry request.
+            </p>
+          </div>
+          <button
+            onClick={onJoinClick}
+            className="btn-outline border-indigo-200 hover:border-indigo-300 text-indigo-700 hover:bg-indigo-50/50 transition-all text-xs font-black py-3 px-5 rounded-xl uppercase tracking-wider mt-4 w-fit flex items-center gap-2 cursor-pointer"
+          >
+            <span>➕</span> Request Center Entry
+          </button>
+        </Card>
       </div>
     </div>
   );
@@ -1341,6 +1488,13 @@ function DashboardContent() {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
   const [selectedCenterId, setSelectedCenterId] = useState<string>('');
+  const [showJoinModal, setShowJoinModal] = useState(false);
+  const [code, setCode] = useState('');
+  const [verifying, setVerifying] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [centerData, setCenterData] = useState<any>(null);
+  const [selectedBatchId, setSelectedBatchId] = useState('');
+  const [errorMsg, setErrorMsg] = useState('');
 
   const activeTab = searchParams.get('tab') || 'youtube';
   const setActiveTab = (tabId: string) => {
@@ -1354,15 +1508,6 @@ function DashboardContent() {
       const data = await getMe() as User;
       if (data.globalRole === 'SUPER_ADMIN') { router.replace('/super-admin'); return; }
 
-      // Admins/Teachers should go to the center admin panel, not student dashboard
-      const adminMembership = data.centerMemberships.find(
-        (m) => m.isApproved && (m.role === 'ADMIN' || m.role === 'TEACHER' || m.role === 'STAFF')
-      );
-      if (adminMembership) {
-        router.replace(`/centers/${adminMembership.center.id}`);
-        return;
-      }
-
       setUser(data);
       const firstApproved = data.centerMemberships.find((m) => m.isApproved);
       if (firstApproved) setSelectedCenterId(firstApproved.center.id);
@@ -1373,7 +1518,33 @@ function DashboardContent() {
     }
   }, [router]);
 
-  useEffect(() => { loadUser(); }, [loadUser]);
+  useEffect(() => {
+    loadUser();
+  }, [loadUser]);
+
+  // Check if join query parameter is present to auto-open modal
+  useEffect(() => {
+    if (searchParams.get('join') === 'true') {
+      setShowJoinModal(true);
+      const params = new URLSearchParams(searchParams.toString());
+      params.delete('join');
+      router.replace(`${pathname}?${params.toString()}`);
+    }
+  }, [searchParams, router, pathname]);
+
+  // Polling logic when user is awaiting admin approval
+  useEffect(() => {
+    const hasPending = user?.centerMemberships.some(m => !m.isApproved);
+    if (!hasPending) return;
+
+    const interval = setInterval(() => {
+      getMe().then((data) => {
+        setUser(data as User);
+      }).catch(() => {});
+    }, 8000);
+
+    return () => clearInterval(interval);
+  }, [user?.centerMemberships]);
 
   async function handleLogout() { await logout(); router.push('/login'); }
 
@@ -1393,7 +1564,7 @@ function DashboardContent() {
   const pendingMemberships = user.centerMemberships.filter((m) => !m.isApproved);
 
   if (approvedMemberships.length === 0) {
-    return <PendingApprovalScreen user={user} pendingMemberships={pendingMemberships} onLogout={handleLogout} />;
+    return <PendingApprovalScreen user={user} pendingMemberships={pendingMemberships} onLogout={handleLogout} onRefresh={loadUser} />;
   }
 
   const activeMembership = approvedMemberships.find((m) => m.center.id === selectedCenterId) || approvedMemberships[0];
@@ -1445,6 +1616,23 @@ function DashboardContent() {
               </div>
             )}
 
+            {/* Admin Console Links */}
+            {user.centerMemberships
+              .filter((m) => m.isApproved && ['ADMIN', 'TEACHER', 'STAFF'].includes(m.role))
+              .map((m) => (
+                <div key={m.center.id} className="pt-2 border-t border-slate-100 mt-2">
+                  <Link
+                    href={`/centers/${m.center.id}`}
+                    className="w-full flex items-center gap-3 px-3 py-2.5 rounded-2xl text-sm font-black text-indigo-700 bg-indigo-50 border border-indigo-100 hover:bg-indigo-100 hover:text-indigo-800 transition cursor-pointer"
+                  >
+                    <span className="text-xl w-8 h-8 rounded-xl bg-white border border-indigo-200/50 flex items-center justify-center shrink-0">⚙️</span>
+                    <span className="truncate">{m.center.name} Console</span>
+                  </Link>
+                </div>
+              ))}
+
+
+
             {/* Nav Items */}
             <p className="text-[9px] font-black text-slate-400 uppercase px-2 pt-2 pb-1.5 tracking-widest">Navigation</p>
             {NAV_TABS.map((tab) => (
@@ -1463,6 +1651,7 @@ function DashboardContent() {
                 <span className="truncate">{tab.label}</span>
               </button>
             ))}
+
 
             {/* Pending notice */}
             {pendingMemberships.length > 0 && (
@@ -1501,6 +1690,7 @@ function DashboardContent() {
             <YoutubeChannelsTab
               centerId={centerId}
               batchId={activeMembership.batchMemberships[0]?.batch?.id || ''}
+              isAdmin={['ADMIN', 'TEACHER', 'STAFF'].includes(activeMembership.role)}
             />
           )}
           {activeTab === 'courses'  && <CoursesTab centerId={centerId} />}
@@ -1510,13 +1700,14 @@ function DashboardContent() {
             <EditProfileTab
               user={user}
               onProfileUpdated={(updated) => setUser((u) => u ? { ...u, ...updated } : u)}
+              onJoinClick={() => setShowJoinModal(true)}
             />
           )}
         </main>
       </div>
 
       {/* ── Mobile Bottom Tab Bar (hidden on md+) ── */}
-      <nav className="fixed bottom-0 left-0 right-0 z-50 md:hidden bg-white/80 backdrop-blur-2xl border-t border-white/60 shadow-[0_-8px_30px_rgba(0,0,0,0.12)] safe-area-inset-bottom">
+      <nav className="fixed bottom-0 left-0 right-0 z-50 md:hidden bg-white/95 backdrop-blur-2xl border-t border-white/60 shadow-[0_-8px_30px_rgba(0,0,0,0.12)] safe-bottom">
         <div className="flex items-stretch h-16">
           {NAV_TABS.map((tab) => {
             const isActive = activeTab === tab.id;
@@ -1547,8 +1738,195 @@ function DashboardContent() {
               </button>
             );
           })}
+
+          {/* Admin Console buttons for mobile */}
+          {user.centerMemberships
+            .filter((m) => m.isApproved && ['ADMIN', 'TEACHER', 'STAFF'].includes(m.role))
+            .map((m) => (
+              <Link
+                key={m.center.id}
+                href={`/centers/${m.center.id}`}
+                className="flex-1 flex flex-col items-center justify-center gap-0.5 relative cursor-pointer transition-all active:scale-95"
+              >
+                <span className="absolute top-0 left-1/4 right-1/4 h-0.5 rounded-full bg-gradient-to-r from-indigo-500 to-purple-600 opacity-0" />
+                <span className="w-10 h-7 rounded-xl flex items-center justify-center text-lg bg-indigo-50 border border-indigo-200/60 scale-100">
+                  ⚙️
+                </span>
+                <span className="text-[9px] font-black uppercase tracking-wide leading-none text-indigo-600">
+                  Console
+                </span>
+              </Link>
+            ))}
         </div>
+
       </nav>
+
+      {/* ── Join Center Modal Overlay ── */}
+      {showJoinModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/40 backdrop-blur-sm animate-in fade-in duration-200">
+          <div className="w-full max-w-md bg-white rounded-3xl border border-slate-100 p-6 shadow-2xl space-y-5 animate-in zoom-in-95 duration-200 relative">
+            <button
+              onClick={() => {
+                setShowJoinModal(false);
+                setCode('');
+                setCenterData(null);
+                setErrorMsg('');
+              }}
+              className="absolute top-4 right-4 text-slate-400 hover:text-slate-600 font-extrabold text-xl cursor-pointer"
+            >
+              ×
+            </button>
+
+            <div className="text-center">
+              <span className="text-3xl">🔑</span>
+              <h3 className="font-sans text-lg font-black text-indigo-950 mt-2">Join a New Center</h3>
+              <p className="text-xs text-slate-500 mt-1">Enter a class join code to send an access request to the center admin.</p>
+            </div>
+
+            <ModalForm
+              code={code}
+              setCode={setCode}
+              verifying={verifying}
+              setVerifying={setVerifying}
+              centerData={centerData}
+              setCenterData={setCenterData}
+              selectedBatchId={selectedBatchId}
+              setSelectedBatchId={setSelectedBatchId}
+              errorMsg={errorMsg}
+              setErrorMsg={setErrorMsg}
+              submitting={submitting}
+              setSubmitting={setSubmitting}
+              onClose={() => {
+                setShowJoinModal(false);
+                setCode('');
+                setCenterData(null);
+                setErrorMsg('');
+                loadUser();
+              }}
+            />
+          </div>
+        </div>
+      )}
     </div>
+  );
+}
+
+function ModalForm({
+  code, setCode, verifying, setVerifying, centerData, setCenterData,
+  selectedBatchId, setSelectedBatchId, errorMsg, setErrorMsg, submitting, setSubmitting, onClose
+}: {
+  code: string; setCode: (v: string) => void;
+  verifying: boolean; setVerifying: (v: boolean) => void;
+  centerData: any; setCenterData: (v: any) => void;
+  selectedBatchId: string; setSelectedBatchId: (v: string) => void;
+  errorMsg: string; setErrorMsg: (v: string) => void;
+  submitting: boolean; setSubmitting: (v: boolean) => void;
+  onClose: () => void;
+}) {
+
+  // Auto-verify code when it reaches 8 characters (e.g. VS-XXXXXX)
+  useEffect(() => {
+    const clean = code.trim().toUpperCase();
+    if (clean.length >= 8) {
+      setVerifying(true);
+      setErrorMsg('');
+      api<any>(`/centers/by-code/${clean}`)
+        .then((data) => {
+          setCenterData(data);
+          if (data.batches && data.batches.length > 0) {
+            setSelectedBatchId(data.batches[0].id);
+          }
+        })
+        .catch((err) => {
+          setErrorMsg(err.message || 'Invalid join code');
+          setCenterData(null);
+        })
+        .finally(() => setVerifying(false));
+    } else {
+      setCenterData(null);
+      setErrorMsg('');
+    }
+  }, [code, setVerifying, setCenterData, setSelectedBatchId, setErrorMsg]);
+
+  async function handleJoinSubmit(e: FormEvent) {
+    e.preventDefault();
+    if (!centerData || submitting) return;
+    setSubmitting(true);
+    setErrorMsg('');
+    try {
+      await api('/centers/join-by-code', {
+        method: 'POST',
+        body: JSON.stringify({
+          code: code.trim().toUpperCase(),
+          batchId: selectedBatchId || undefined,
+        }),
+      });
+      onClose();
+    } catch (err: any) {
+      setErrorMsg(err.message || 'Failed to submit request');
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <form onSubmit={handleJoinSubmit} className="space-y-4 text-left">
+      {errorMsg && (
+        <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs font-semibold">
+          ⚠️ {errorMsg}
+        </div>
+      )}
+      
+      <div className="space-y-1">
+        <label className="text-xs font-bold text-slate-600">Join Code</label>
+        <input
+          type="text"
+          required
+          placeholder="e.g. VS-XXXXXX"
+          value={code}
+          onChange={(e) => setCode(e.target.value)}
+          className="w-full input-devotional uppercase tracking-widest font-black"
+        />
+      </div>
+
+      {verifying && (
+        <p className="text-[10px] text-indigo-600 font-bold italic animate-pulse">Checking join code...</p>
+      )}
+
+      {centerData && (
+        <div className="space-y-3 p-3 bg-slate-50 border border-slate-200 rounded-2xl animate-in fade-in slide-in-from-top-2 duration-200">
+          <p className="text-xs font-bold text-indigo-950">🏫 Center: <span className="font-black text-indigo-700">{centerData.name}</span></p>
+          
+          {centerData.batches && centerData.batches.length > 0 ? (
+            <div className="space-y-1">
+              <label className="text-[10px] font-black uppercase text-slate-500 tracking-wider">Select Group / Classroom</label>
+              <select
+                value={selectedBatchId}
+                onChange={(e) => setSelectedBatchId(e.target.value)}
+                className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs font-bold text-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-300 cursor-pointer"
+              >
+                {centerData.batches.map((b: any) => (
+                  <option key={b.id} value={b.id}>{b.name}</option>
+                ))}
+              </select>
+            </div>
+          ) : (
+            <p className="text-[10px] text-rose-600 font-bold">No batches available in this center.</p>
+          )}
+        </div>
+      )}
+
+      <button
+        type="submit"
+        disabled={!centerData || submitting}
+        className={`w-full py-2.5 rounded-xl text-xs font-black uppercase tracking-wider transition-all duration-300 shadow-md cursor-pointer ${
+          centerData && !submitting
+            ? 'bg-indigo-650 hover:bg-indigo-750 text-white hover:shadow-lg'
+            : 'bg-slate-100 text-slate-400 cursor-not-allowed border border-slate-200 shadow-none'
+        }`}
+      >
+        {submitting ? 'Submitting Request...' : '🔑 Request Entry'}
+      </button>
+    </form>
   );
 }

@@ -17,7 +17,23 @@ const lato = Lato({
 export const metadata: Metadata = {
   title: 'VidyaSetu — Bridge of Knowledge',
   description: 'Devotional education platform for coaching institutes',
+  appleWebApp: {
+    capable: true,
+    statusBarStyle: 'default',
+    title: 'VidyaSetu',
+  },
+  formatDetection: { telephone: false },
 };
+
+export const viewport = {
+  width: 'device-width',
+  initialScale: 1,
+  maximumScale: 1,
+  userScalable: false,
+  viewportFit: 'cover',   // ← unlocks env(safe-area-inset-*) in WebView
+  themeColor: '#ffffff',
+};
+
 
 export default function RootLayout({
   children,

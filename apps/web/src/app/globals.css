@@ -154,3 +154,24 @@ body {
 .animate-slide-in {
   animation: slideIn 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards;
 }
+
+/* ── Safe-area inset utilities (WebView / APK wrapper support) ── */
+/* These are used on fixed top/bottom bars to avoid notches and gesture bars */
+
+.safe-top {
+  padding-top: env(safe-area-inset-top);
+}
+
+.safe-bottom {
+  /* min 8px for gesture-bar phones, more if device declares it */
+  padding-bottom: max(8px, env(safe-area-inset-bottom));
+}
+
+/* Body always fills edge-to-edge on notched devices */
+@supports (padding-top: env(safe-area-inset-top)) {
+  body {
+    /* prevent content from rendering under the status bar by default */
+    padding-top: env(safe-area-inset-top);
+  }
+}
+
