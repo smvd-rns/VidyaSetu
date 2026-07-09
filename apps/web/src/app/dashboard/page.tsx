@@ -357,7 +357,7 @@ function YouTubePlayer({ videoId, title }: { videoId: string; title: string }) {
 }
 
 
-function VideosTab({ centerId, onBack }: { centerId: string; onBack: () => void }) {
+function VideosTab({ centerId, batchIds, isAdmin, onBack }: { centerId: string; batchIds: string[]; isAdmin?: boolean; onBack: () => void }) {
   const [shorts, setShorts] = useState<Video[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -371,11 +371,21 @@ function VideosTab({ centerId, onBack }: { centerId: string; onBack: () => void 
   shortsLengthRef.current = shorts.length;
 
   const fetchShorts = useCallback(async (append = false) => {
+    // FRONTEND GUARD: no batch = no access
+    if (!isAdmin && batchIds.length === 0) {
+      setShorts([]);
+      setLoading(false);
+      return;
+    }
     if (append) setLoadingMore(true);
     else setLoading(true);
 
     try {
-      const data = await api<Video[]>(`/centers/${centerId}/shorts?limit=12`);
+      // Pass all batchIds so server only returns shorts for user's batches
+      const batchQs = !isAdmin && batchIds.length > 0
+        ? '&' + batchIds.map((id) => `batchId=${encodeURIComponent(id)}`).join('&')
+        : '';
+      const data = await api<Video[]>(`/centers/${centerId}/shorts?limit=12${batchQs}`);
       setShorts((prev) => {
         const existingIds = new Set(prev.map((item) => item.id));
         const filtered = data.filter((item) => !existingIds.has(item.id));
@@ -387,7 +397,7 @@ function VideosTab({ centerId, onBack }: { centerId: string; onBack: () => void 
       setLoading(false);
       setLoadingMore(false);
     }
-  }, [centerId]);
+  }, [centerId, batchIds, isAdmin]);
 
   useEffect(() => {
     fetchShorts();
@@ -490,7 +500,11 @@ function VideosTab({ centerId, onBack }: { centerId: string; onBack: () => void 
     return (
       <div className="text-center py-20 bg-white/60 backdrop-blur-xl rounded-3xl border border-white/80 shadow-sm">
         <span className="text-6xl">📺</span>
-        <p className="mt-4 text-slate-500 text-sm font-semibold">No short videos have been assigned to your group yet.</p>
+        <p className="mt-4 text-slate-500 text-sm font-semibold">
+          {!isAdmin && batchIds.length === 0
+            ? 'You have not been assigned to any group yet. Please contact your admin.'
+            : 'No short videos have been assigned to your group yet.'}
+        </p>
       </div>
     );
   }
@@ -610,7 +624,7 @@ function VideosTab({ centerId, onBack }: { centerId: string; onBack: () => void 
 }
 
 // ─── YouTube Channels Tab ──────────────────────────────────────────────────────
-function YoutubeChannelsTab({ centerId, batchId, isAdmin }: { centerId: string; batchId?: string; isAdmin?: boolean }) {
+function YoutubeChannelsTab({ centerId, batchIds, isAdmin }: { centerId: string; batchIds: string[]; isAdmin?: boolean }) {
   const router = useRouter();
   const searchParams = useSearchParams();
   const pathname = usePathname();
@@ -620,8 +634,17 @@ function YoutubeChannelsTab({ centerId, batchId, isAdmin }: { centerId: string; 
   const [searchQuery, setSearchQuery] = useState('');
   const [channelSearch, setChannelSearch] = useState('');
   const [loading, setLoading] = useState(true);
+  const [loadingVideos, setLoadingVideos] = useState(false);
   const [descExpanded, setDescExpanded] = useState(false);
   const [isPlayingLive, setIsPlayingLive] = useState(false);
+
+  // Keep a stable ref to searchParams so effects can read it without adding it to deps
+  // (adding searchParams to deps causes a re-fetch loop when router.replace sets the first video ID)
+  const searchParamsRef = useRef(searchParams);
+  searchParamsRef.current = searchParams;
+
+  // Simple in-memory cache: cacheKey → Video[] avoids re-fetching on back-navigation
+  const videoCacheRef = useRef<Map<string, Video[]>>(new Map());
 
   // Playlist tabs states
   const [subTab, setSubTab] = useState<'videos' | 'playlists'>('videos');
@@ -669,11 +692,11 @@ function YoutubeChannelsTab({ centerId, batchId, isAdmin }: { centerId: string; 
     setTimeout(() => {
       const el = document.getElementById('video-player-section');
       if (el) {
-        el.scrollIntoView({ behavior: 'smooth', block: 'start' });
-      } else {
-        window.scrollTo({ top: 0, behavior: 'smooth' });
+        // Offset by 72px to account for the sticky top navbar (h-16 = 64px) + a little breathing room
+        const y = el.getBoundingClientRect().top + window.scrollY - 72;
+        window.scrollTo({ top: Math.max(0, y), behavior: 'smooth' });
       }
-    }, 100);
+    }, 120);
   };
 
   const setSelectedVideo = (video: Video | null) => {
@@ -694,7 +717,18 @@ function YoutubeChannelsTab({ centerId, batchId, isAdmin }: { centerId: string; 
   }, [selectedChannel?.id, selectedPlaylist?.id, searchQuery]);
 
   useEffect(() => {
-    const url = `/centers/${centerId}/youtube/channels${(batchId && !isAdmin) ? `?batchId=${batchId}` : ''}`;
+    // FRONTEND GUARD: if user is not an admin and has no batch memberships,
+    // they have no channel access — skip the API call entirely and show empty state.
+    if (!isAdmin && batchIds.length === 0) {
+      setChannels([]);
+      setLoading(false);
+      return;
+    }
+    let url = `/centers/${centerId}/youtube/channels`;
+    if (!isAdmin) {
+      const qs = batchIds.map((id) => `batchId=${encodeURIComponent(id)}`).join('&');
+      url += qs ? `?${qs}` : '?noBatch=1'; // noBatch=1 tells server: user has no batch, show nothing unless globally assigned
+    }
     api<YoutubeChannel[]>(url).then((data) => {
       const libraryChannel: YoutubeChannel = {
         id: 'library',
@@ -708,44 +742,72 @@ function YoutubeChannelsTab({ centerId, batchId, isAdmin }: { centerId: string; 
       };
       setChannels([libraryChannel, ...data]);
     }).finally(() => setLoading(false));
-  }, [centerId, batchId, isAdmin]);
+  }, [centerId, batchIds, isAdmin]);
 
   useEffect(() => {
-    if (!selectedChannel) { setVideos([]); setIsPlayingLive(false); return; }
-    if (selectedPlaylist) {
-      api<Video[]>(`/centers/${centerId}/playlists/${selectedPlaylist.id}/videos`).then((data) => {
+    const chanId = selectedChannel?.id;
+    const playId = selectedPlaylist?.id;
+
+    if (!chanId) { setVideos([]); setIsPlayingLive(false); return; }
+
+    const cacheKey = playId ? `playlist:${playId}` : `channel:${chanId}`;
+
+    // --- Serve from cache if available (prevents re-fetch and eliminates loading flash) ---
+    if (videoCacheRef.current.has(cacheKey)) {
+      const cached = videoCacheRef.current.get(cacheKey)!;
+      setVideos(cached);
+      setLoadingVideos(false);
+      // Auto-select first video if URL has none
+      if (!searchParamsRef.current.get('ytVideoId') && cached.length > 0) {
+        const p = new URLSearchParams(searchParamsRef.current.toString());
+        p.set('ytVideoId', cached[0].youtubeId || cached[0].id);
+        router.replace(`${pathname}?${p.toString()}`, { scroll: false });
+      }
+      return;
+    }
+
+    // --- Fetch from API ---
+    setLoadingVideos(true);
+    setVideos([]);
+    const batchQs = !isAdmin && batchIds.length > 0
+      ? '&' + batchIds.map((id) => `batchId=${encodeURIComponent(id)}`).join('&')
+      : '';
+
+    const autoSelectFirst = (list: Video[]) => {
+      // Read searchParams via ref so this doesn't trigger another render-cycle
+      if (!searchParamsRef.current.get('ytVideoId') && list.length > 0) {
+        const p = new URLSearchParams(searchParamsRef.current.toString());
+        p.set('ytVideoId', list[0].youtubeId || list[0].id);
+        router.replace(`${pathname}?${p.toString()}`, { scroll: false });
+      }
+    };
+
+    if (playId && selectedPlaylist) {
+      api<Video[]>(`/centers/${centerId}/playlists/${playId}/videos`).then((data) => {
+        videoCacheRef.current.set(cacheKey, data);
         setVideos(data);
-        const currentVideoId = searchParams.get('ytVideoId');
-        if (!currentVideoId && data.length > 0) {
-          const params = new URLSearchParams(searchParams.toString());
-          params.set('ytVideoId', data[0].youtubeId || data[0].id);
-          router.replace(`${pathname}?${params.toString()}`, { scroll: false });
-        }
-      });
-    } else if (selectedChannel.id === 'library') {
+        autoSelectFirst(data);
+      }).finally(() => setLoadingVideos(false));
+    } else if (chanId === 'library') {
       api<{ videos: Video[], playlists: any[] }>(`/centers/${centerId}/library`).then((data) => {
+        videoCacheRef.current.set(cacheKey, data.videos);
         setVideos(data.videos);
         setPlaylists(data.playlists);
-        const currentVideoId = searchParams.get('ytVideoId');
-        if (!currentVideoId && data.videos.length > 0) {
-          const params = new URLSearchParams(searchParams.toString());
-          params.set('ytVideoId', data.videos[0].youtubeId || data.videos[0].id);
-          router.replace(`${pathname}?${params.toString()}`, { scroll: false });
-        }
-      });
+        autoSelectFirst(data.videos);
+      }).finally(() => setLoadingVideos(false));
     } else {
-      api<Video[]>(`/centers/${centerId}/videos`).then((data) => {
-        const chanVids = data.filter((v) => v.playlistId && v.playlist?.channelId === selectedChannel.id);
+      api<Video[]>(`/centers/${centerId}/videos?channelId=${chanId}${batchQs}`).then((data) => {
+        const chanVids = data.filter((v) => v.playlistId && v.playlist?.channelId === chanId);
+        videoCacheRef.current.set(cacheKey, chanVids);
         setVideos(chanVids);
-        const currentVideoId = searchParams.get('ytVideoId');
-        if (!currentVideoId && chanVids.length > 0) {
-          const params = new URLSearchParams(searchParams.toString());
-          params.set('ytVideoId', chanVids[0].youtubeId || chanVids[0].id);
-          router.replace(`${pathname}?${params.toString()}`, { scroll: false });
-        }
-      });
+        autoSelectFirst(chanVids);
+      }).finally(() => setLoadingVideos(false));
     }
-  }, [centerId, selectedChannel, selectedPlaylist, searchParams, router, pathname]);
+  // Use stable primitive IDs in deps — NOT the full objects or searchParams.
+  // searchParams is read via ref inside to avoid the re-fetch loop.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [centerId, selectedChannel?.id, selectedPlaylist?.id, pathname, router, batchIds, isAdmin]);
+
 
   useEffect(() => {
     if (!selectedChannel || selectedChannel.id === 'library' || subTab !== 'playlists') return;
@@ -837,9 +899,19 @@ function YoutubeChannelsTab({ centerId, batchId, isAdmin }: { centerId: string; 
 
         {channels.length === 0 ? (
           <div className="text-center py-20 bg-white/60 backdrop-blur-xl rounded-3xl border border-white/80">
-            <span className="text-5xl">📺</span>
-            <p className="mt-4 text-slate-500 text-sm font-semibold">No channels have been configured yet.</p>
+            <span className="text-5xl">{!isAdmin && batchIds.length === 0 ? '🔒' : '📺'}</span>
+            <p className="mt-4 text-slate-700 text-sm font-black">
+              {!isAdmin && batchIds.length === 0
+                ? 'No group assigned'
+                : 'No channels configured'}
+            </p>
+            <p className="mt-1 text-slate-400 text-xs font-semibold max-w-xs mx-auto">
+              {!isAdmin && batchIds.length === 0
+                ? 'You have not been added to any batch/group yet. Please contact your admin to get access.'
+                : 'No YouTube channels have been configured for this center yet.'}
+            </p>
           </div>
+
         ) : (
           <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4 sm:gap-6">
             {filtered.map((chan, i) => (
@@ -970,7 +1042,14 @@ function YoutubeChannelsTab({ centerId, batchId, isAdmin }: { centerId: string; 
         </div>
       </div>
       {/* ── Active Video Player Section ── */}
-      {(selectedVideo || isPlayingLive) ? (
+      {loadingVideos ? (
+        <div id="video-player-section" className="scroll-mt-20">
+          <div style={{ width: '100%', aspectRatio: '16/9', background: '#0f172a', borderRadius: '1rem', display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: '12px' }}>
+            <div style={{ width: 40, height: 40, border: '4px solid rgba(99,102,241,0.3)', borderTopColor: '#6366f1', borderRadius: '50%', animation: 'spin 0.9s linear infinite' }} />
+            <p style={{ color: 'rgba(255,255,255,0.5)', fontSize: 12, fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase' }}>Loading videos…</p>
+          </div>
+        </div>
+      ) : (selectedVideo || isPlayingLive) ? (
         <div id="video-player-section" className="space-y-3 scroll-mt-20">
           {isPlayingLive ? (
             <div style={{ width: '100%', aspectRatio: '16/9', background: '#000', borderRadius: '1rem', position: 'relative', overflow: 'hidden' }}>
@@ -1685,11 +1764,11 @@ function DashboardContent() {
           </div>
 
           {/* Tab Content */}
-          {activeTab === 'videos'   && <VideosTab centerId={centerId} onBack={() => setActiveTab('youtube')} />}
+          {activeTab === 'videos'   && <VideosTab centerId={centerId} batchIds={activeMembership.batchMemberships.map((bm) => bm.batch.id)} isAdmin={['ADMIN', 'TEACHER', 'STAFF'].includes(activeMembership.role)} onBack={() => setActiveTab('youtube')} />}
           {activeTab === 'youtube'  && (
             <YoutubeChannelsTab
               centerId={centerId}
-              batchId={activeMembership.batchMemberships[0]?.batch?.id || ''}
+              batchIds={activeMembership.batchMemberships.map((bm) => bm.batch.id)}
               isAdmin={['ADMIN', 'TEACHER', 'STAFF'].includes(activeMembership.role)}
             />
           )}
