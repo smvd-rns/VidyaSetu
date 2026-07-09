@@ -1,6 +1,7 @@
 import type { Metadata } from 'next';
 import { Cormorant_Garamond, Lato } from 'next/font/google';
 import './globals.css';
+import { KeepAlive } from '@/components/KeepAlive';
 
 const cormorant = Cormorant_Garamond({
   variable: '--font-cormorant',
@@ -42,7 +43,10 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" className={`${cormorant.variable} ${lato.variable} h-full`}>
-      <body className="min-h-full flex flex-col bg-devotional antialiased">{children}</body>
+      <body className="min-h-full flex flex-col bg-devotional antialiased">
+        <KeepAlive />
+        {children}
+      </body>
     </html>
   );
 }
