@@ -359,6 +359,7 @@ model Video {
 
   @@index([chapterId])
   @@index([playlistId])
+  @@index([playlistId, publishedAt(sort: Desc), createdAt(sort: Desc)])
   @@map("videos")
 }
 

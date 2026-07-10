@@ -386,8 +386,23 @@ export class CentersController {
     @Param('centerId') centerId: string,
     @CurrentUser() user: RequestUser,
     @Query('channelId') channelId?: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
   ) {
-    return this.centersService.listVideos(centerId, user.id, channelId);
+    const pageNum = page ? parseInt(page, 10) : 1;
+    const limitNum = limit ? parseInt(limit, 10) : 50;
+    return this.centersService.listVideos(centerId, user.id, channelId, pageNum, limitNum);
+  }
+
+  @Get(':centerId/videos/:videoId')
+  @UseGuards(CenterAccessGuard)
+  @CenterIdParam('centerId')
+  @CenterRoles(CenterMemberRole.STUDENT, CenterMemberRole.STAFF, CenterMemberRole.TEACHER, CenterMemberRole.ADMIN)
+  getVideo(
+    @Param('centerId') centerId: string,
+    @Param('videoId') videoId: string,
+  ) {
+    return this.centersService.getVideo(centerId, videoId);
   }
 
   @Get(':centerId/shorts')

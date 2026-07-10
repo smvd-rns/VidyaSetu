@@ -168,7 +168,7 @@ function PendingApprovalScreen({ user, pendingMemberships, onLogout, onRefresh }
           <p className="mt-2 text-white/70 leading-relaxed text-xs lg:text-sm">
             Hi <strong className="text-white">{user.firstName}</strong>! 
             {pendingMemberships.length > 0 
-              ? ' Your registration has been received and is waiting for approval.' 
+              ? ' Your registration has been received and is waiting for approval. Please contact the administrator to get approved. Once approved, refresh this page to access your dashboard.' 
               : ' Enter your unique class join code below to request access.'}
           </p>
         </div>
@@ -588,7 +588,6 @@ function YoutubeChannelsTab({ centerId, batchIds, isAdmin }: { centerId: string;
   const [subTab, setSubTab] = useState<'videos' | 'playlists'>('videos');
   const [playlists, setPlaylists] = useState<any[]>([]);
   const [loadingPlaylists, setLoadingPlaylists] = useState(false);
-  const [visibleCount, setVisibleCount] = useState(50);
 
   // Derive selection states from search params
   const channelIdParam = searchParams.get('channelId');
@@ -626,15 +625,25 @@ function YoutubeChannelsTab({ centerId, batchIds, isAdmin }: { centerId: string;
   const videoIdParam = searchParams.get('ytVideoId');
   const selectedVideo = videos.find((v) => v.youtubeId === videoIdParam || v.id === videoIdParam) || null;
 
+  // Load description on-demand when a video is selected
+  useEffect(() => {
+    if (!selectedVideo || selectedVideo.description !== undefined) return;
+    api<Video>(`/centers/${centerId}/videos/${selectedVideo.id}`)
+      .then((fullVideo) => {
+        setVideos((prev) =>
+          prev.map((v) => (v.id === fullVideo.id ? { ...v, description: fullVideo.description || '' } : v))
+        );
+      })
+      .catch((err) => console.error('Failed to load video description:', err));
+  }, [centerId, selectedVideo?.id]);
+
   const scrollToPlayer = () => {
     setTimeout(() => {
-      const el = document.getElementById('video-player-section');
+      const el = document.getElementById('video-player-anchor');
       if (el) {
-        // Offset by 72px to account for the sticky top navbar (h-16 = 64px) + a little breathing room
-        const y = el.getBoundingClientRect().top + window.scrollY - 72;
-        window.scrollTo({ top: Math.max(0, y), behavior: 'smooth' });
+        el.scrollIntoView({ behavior: 'smooth', block: 'start' });
       }
-    }, 120);
+    }, 150);
   };
 
   const setSelectedVideo = (video: Video | null) => {
@@ -650,9 +659,10 @@ function YoutubeChannelsTab({ centerId, batchIds, isAdmin }: { centerId: string;
 
   useEffect(() => { setDescExpanded(false); }, [selectedVideo?.id]);
 
-  useEffect(() => {
-    setVisibleCount(50);
-  }, [selectedChannel?.id, selectedPlaylist?.id, searchQuery]);
+  // Pagination states
+  const [page, setPage] = useState(1);
+  const [hasMore, setHasMore] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
 
   useEffect(() => {
     // FRONTEND GUARD: if user is not an admin and has no batch memberships,
@@ -688,22 +698,6 @@ function YoutubeChannelsTab({ centerId, batchIds, isAdmin }: { centerId: string;
 
     if (!chanId) { setVideos([]); setIsPlayingLive(false); return; }
 
-    const cacheKey = playId ? `playlist:${playId}` : `channel:${chanId}`;
-
-    // --- Serve from cache if available (prevents re-fetch and eliminates loading flash) ---
-    if (videoCacheRef.current.has(cacheKey)) {
-      const cached = videoCacheRef.current.get(cacheKey)!;
-      setVideos(cached);
-      setLoadingVideos(false);
-      // Auto-select first video if URL has none
-      if (!searchParamsRef.current.get('ytVideoId') && cached.length > 0) {
-        const p = new URLSearchParams(searchParamsRef.current.toString());
-        p.set('ytVideoId', cached[0].youtubeId || cached[0].id);
-        router.replace(`${pathname}?${p.toString()}`, { scroll: false });
-      }
-      return;
-    }
-
     // --- Fetch from API ---
     setLoadingVideos(true);
     setVideos([]);
@@ -722,29 +716,61 @@ function YoutubeChannelsTab({ centerId, batchIds, isAdmin }: { centerId: string;
 
     if (playId && selectedPlaylist) {
       api<Video[]>(`/centers/${centerId}/playlists/${playId}/videos`).then((data) => {
-        videoCacheRef.current.set(cacheKey, data);
         setVideos(data);
+        setHasMore(false);
         autoSelectFirst(data);
       }).finally(() => setLoadingVideos(false));
     } else if (chanId === 'library') {
       api<{ videos: Video[], playlists: any[] }>(`/centers/${centerId}/library`).then((data) => {
-        videoCacheRef.current.set(cacheKey, data.videos);
         setVideos(data.videos);
         setPlaylists(data.playlists);
+        setHasMore(false);
         autoSelectFirst(data.videos);
       }).finally(() => setLoadingVideos(false));
     } else {
-      api<Video[]>(`/centers/${centerId}/videos?channelId=${chanId}${batchQs}`).then((data) => {
-        const chanVids = data.filter((v) => v.playlistId && v.playlist?.channelId === chanId);
-        videoCacheRef.current.set(cacheKey, chanVids);
-        setVideos(chanVids);
-        autoSelectFirst(chanVids);
+      // Fetch Page 1
+      setPage(1);
+      setHasMore(true);
+      api<Video[]>(`/centers/${centerId}/videos?channelId=${chanId}&page=1&limit=50${batchQs}`).then((data) => {
+        setVideos(data);
+        if (data.length < 50) setHasMore(false);
+        autoSelectFirst(data);
       }).finally(() => setLoadingVideos(false));
     }
-  // Use stable primitive IDs in deps — NOT the full objects or searchParams.
-  // searchParams is read via ref inside to avoid the re-fetch loop.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [centerId, selectedChannel?.id, selectedPlaylist?.id, pathname, router, batchIds, isAdmin]);
+
+  const handleLoadMore = async (e: React.MouseEvent<HTMLButtonElement>) => {
+    e.currentTarget.blur();
+    const chanId = selectedChannel?.id;
+    if (loadingMore || !hasMore || !chanId) return;
+
+    // Capture the current scroll position before the DOM updates
+    const currentScrollY = window.scrollY;
+
+    setLoadingMore(true);
+    const nextPage = page + 1;
+    const batchQs = !isAdmin && batchIds.length > 0
+      ? '&' + batchIds.map((id) => `batchId=${encodeURIComponent(id)}`).join('&')
+      : '';
+    try {
+      const data = await api<Video[]>(`/centers/${centerId}/videos?channelId=${chanId}&page=${nextPage}&limit=50${batchQs}`);
+      if (data.length < 50) {
+        setHasMore(false);
+      }
+      setVideos((prev) => [...prev, ...data]);
+      setPage(nextPage);
+
+      // Force scroll restoration after React finishes rendering the new items
+      setTimeout(() => {
+        window.scrollTo({ top: currentScrollY });
+      }, 50);
+    } catch (err) {
+      console.error('Failed to load more videos:', err);
+    } finally {
+      setLoadingMore(false);
+    }
+  };
 
 
   useEffect(() => {
@@ -979,6 +1005,7 @@ function YoutubeChannelsTab({ centerId, batchIds, isAdmin }: { centerId: string;
           )}
         </div>
       </div>
+      <div id="video-player-anchor" className="scroll-mt-24" />
       {/* ── Active Video Player Section ── */}
       {loadingVideos ? (
         <div id="video-player-section" className="scroll-mt-20">
@@ -1090,9 +1117,9 @@ function YoutubeChannelsTab({ centerId, batchIds, isAdmin }: { centerId: string;
         <div className="space-y-4">
           <div className="space-y-2.5">
             <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest px-1">
-              {selectedPlaylist ? `📁 ${selectedPlaylist.title}` : 'All Videos'} — {filteredVideos.length} items
+              {selectedPlaylist ? `📁 ${selectedPlaylist.title}` : 'All Videos'}
             </p>
-            {filteredVideos.slice(0, visibleCount).map((v) => (
+            {filteredVideos.map((v) => (
               <div
                 key={v.id}
                 onClick={() => { setSelectedVideo(v); setIsPlayingLive(false); }}
@@ -1124,13 +1151,14 @@ function YoutubeChannelsTab({ centerId, batchIds, isAdmin }: { centerId: string;
                 </div>
               </div>
             ))}
-            {filteredVideos.length > visibleCount && (
+            {hasMore && (
               <div className="flex justify-center pt-5 pb-3">
                 <button
-                  onClick={() => setVisibleCount((prev) => prev + 50)}
-                  className="px-6 py-2.5 bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-700 hover:to-violet-700 text-white text-xs font-black rounded-xl transition shadow-md hover:shadow-lg cursor-pointer transform active:scale-95"
+                  onClick={handleLoadMore}
+                  disabled={loadingMore}
+                  className="px-6 py-2.5 bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-700 hover:to-violet-700 text-white text-xs font-black rounded-xl transition shadow-md hover:shadow-lg cursor-pointer transform active:scale-95 disabled:opacity-50"
                 >
-                  Load More Videos
+                  {loadingMore ? 'Loading...' : 'Load More Videos'}
                 </button>
               </div>
             )}
@@ -1549,19 +1577,7 @@ function DashboardContent() {
     }
   }, [searchParams, router, pathname]);
 
-  // Polling logic when user is awaiting admin approval
-  useEffect(() => {
-    const hasPending = user?.centerMemberships.some(m => !m.isApproved);
-    if (!hasPending) return;
 
-    const interval = setInterval(() => {
-      getMe().then((data) => {
-        setUser(data as User);
-      }).catch(() => {});
-    }, 8000);
-
-    return () => clearInterval(interval);
-  }, [user?.centerMemberships]);
 
   async function handleLogout() { await logout(); router.push('/login'); }
 

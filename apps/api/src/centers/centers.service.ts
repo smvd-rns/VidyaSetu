@@ -825,7 +825,7 @@ export class CentersService {
       orderBy: { createdAt: 'desc' },
     });
   }
-  async listVideos(centerId: string, userId?: string, channelId?: string) {
+  async listVideos(centerId: string, userId?: string, channelId?: string, page = 1, limit = 50) {
     await this.ensureCenterActive(centerId);
 
     let isStudent = false;
@@ -845,8 +845,8 @@ export class CentersService {
     }
 
     const cacheKey = isStudent
-      ? `youtube:videos:${centerId}:student:${userId}${channelId ? `:chan:${channelId}` : ''}`
-      : `youtube:videos:${centerId}:staff${channelId ? `:chan:${channelId}` : ''}`;
+      ? `youtube:videos:${centerId}:student:${userId}${channelId ? `:chan:${channelId}` : ''}:page:${page}:limit:${limit}`
+      : `youtube:videos:${centerId}:staff${channelId ? `:chan:${channelId}` : ''}:page:${page}:limit:${limit}`;
 
     const cached = await this.redis.get<any[]>(cacheKey);
     let videos: any[];
@@ -910,20 +910,34 @@ export class CentersService {
 
       const dbVideos = await this.prisma.video.findMany({
         where: queryWhere,
-        include: {
-          _count: {
-            select: { likes: true }
-          },
+        select: {
+          id: true,
+          chapterId: true,
+          playlistId: true,
+          youtubeId: true,
+          title: true,
+          duration: true,
+          isShort: true,
+          sortOrder: true,
+          isActive: true,
+          publishedAt: true,
+          createdAt: true,
+          updatedAt: true,
           playlist: {
             include: {
               channel: true
             }
+          },
+          _count: {
+            select: { likes: true }
           }
         },
         orderBy: [
           { publishedAt: 'desc' },
           { createdAt: 'desc' }
         ],
+        take: limit,
+        skip: (page - 1) * limit,
       });
 
       videos = dbVideos.map((v) => {
@@ -950,6 +964,22 @@ export class CentersService {
       ...v,
       liked: likedVideoIds.has(v.id)
     }));
+  }
+
+  async getVideo(centerId: string, videoId: string) {
+    await this.ensureCenterActive(centerId);
+    const video = await this.prisma.video.findUnique({
+      where: { id: videoId },
+      include: {
+        playlist: {
+          include: {
+            channel: true
+          }
+        }
+      }
+    });
+    if (!video) throw new NotFoundException('Video not found.');
+    return video;
   }
 
   async listShorts(centerId: string, userId: string, limit = 12) {
@@ -1108,8 +1138,10 @@ export class CentersService {
       include: { playlist: true },
     });
     if (video?.playlist?.channelId) {
-      await this.redis.del(`youtube:videos:${centerId}:student:${userId}:chan:${video.playlist.channelId}`);
-      await this.redis.del(`youtube:videos:${centerId}:staff:chan:${video.playlist.channelId}`);
+      for (let p = 1; p <= 5; p++) {
+        await this.redis.del(`youtube:videos:${centerId}:student:${userId}:chan:${video.playlist.channelId}:page:${p}:limit:50`);
+        await this.redis.del(`youtube:videos:${centerId}:staff:chan:${video.playlist.channelId}:page:${p}:limit:50`);
+      }
     }
 
     const count = await this.prisma.videoLike.count({
