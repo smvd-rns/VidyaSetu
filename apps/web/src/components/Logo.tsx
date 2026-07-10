@@ -36,7 +36,7 @@ export function Logo({ size = 'md', showTagline = false }: LogoProps) {
       </div>
       <div>
         <span className={`font-sans ${s.title} font-extrabold tracking-tight text-indigo-950`}>
-          VidyaSetu
+          VenuTube
         </span>
         {showTagline && (
           <p className={`${s.tag} text-muted`}>Professional College Education Portal</p>

@@ -825,7 +825,7 @@ export class CentersService {
       orderBy: { createdAt: 'desc' },
     });
   }
-  async listVideos(centerId: string, userId?: string) {
+  async listVideos(centerId: string, userId?: string, channelId?: string) {
     await this.ensureCenterActive(centerId);
 
     let isStudent = false;
@@ -845,8 +845,8 @@ export class CentersService {
     }
 
     const cacheKey = isStudent
-      ? `youtube:videos:${centerId}:student:${userId}`
-      : `youtube:videos:${centerId}:staff`;
+      ? `youtube:videos:${centerId}:student:${userId}${channelId ? `:chan:${channelId}` : ''}`
+      : `youtube:videos:${centerId}:staff${channelId ? `:chan:${channelId}` : ''}`;
 
     const cached = await this.redis.get<any[]>(cacheKey);
     let videos: any[];
@@ -854,17 +854,49 @@ export class CentersService {
     if (cached) {
       videos = cached;
     } else {
-      const dbVideos = await this.prisma.video.findMany({
-        where: {
-          OR: [
-            // Chapter Videos
-            {
-              chapter: {
-                subject: {
-                  course: {
+      // Build optimized where clause. If channelId is provided, query only that channel's videos
+      const queryWhere = channelId
+        ? {
+            playlist: {
+              channel: {
+                centerId,
+                id: channelId,
+                ...(isStudent ? {
+                  batches: {
+                    some: {
+                      batchId: { in: batchIds }
+                    }
+                  }
+                } : {})
+              }
+            }
+          }
+        : {
+            OR: [
+              // Chapter Videos
+              {
+                chapter: {
+                  subject: {
+                    course: {
+                      centerId,
+                      ...(isStudent ? {
+                        batchAssignments: {
+                          some: {
+                            batchId: { in: batchIds }
+                          }
+                        }
+                      } : {})
+                    }
+                  }
+                }
+              },
+              // YouTube Channel Videos
+              {
+                playlist: {
+                  channel: {
                     centerId,
                     ...(isStudent ? {
-                      batchAssignments: {
+                      batches: {
                         some: {
                           batchId: { in: batchIds }
                         }
@@ -873,24 +905,11 @@ export class CentersService {
                   }
                 }
               }
-            },
-            // YouTube Channel Videos
-            {
-              playlist: {
-                channel: {
-                  centerId,
-                  ...(isStudent ? {
-                    batches: {
-                      some: {
-                        batchId: { in: batchIds }
-                      }
-                    }
-                  } : {})
-                }
-              }
-            }
-          ]
-        },
+            ]
+          };
+
+      const dbVideos = await this.prisma.video.findMany({
+        where: queryWhere,
         include: {
           _count: {
             select: { likes: true }
@@ -1082,6 +1101,16 @@ export class CentersService {
     await this.redis.del(`youtube:videos:${centerId}`);
     await this.redis.del(`youtube:videos:${centerId}:student:${userId}`);
     await this.redis.del(`youtube:videos:${centerId}:staff`);
+
+    // Invalidate channel-specific caches if the video belongs to a channel
+    const video = await this.prisma.video.findUnique({
+      where: { id: videoId },
+      include: { playlist: true },
+    });
+    if (video?.playlist?.channelId) {
+      await this.redis.del(`youtube:videos:${centerId}:student:${userId}:chan:${video.playlist.channelId}`);
+      await this.redis.del(`youtube:videos:${centerId}:staff:chan:${video.playlist.channelId}`);
+    }
 
     const count = await this.prisma.videoLike.count({
       where: { videoId }

@@ -158,7 +158,7 @@ export default function ApplyCenterPage() {
               </FormField>
             </div>
 
-            <FormField label="Message to Super Admin" hint="Why do you wish to join VidyaSetu?">
+            <FormField label="Message to Super Admin" hint="Why do you wish to join VenuTube?">
               <textarea
                 rows={3}
                 value={form.message}

@@ -279,79 +279,17 @@ declare global {
 }
 
 function YouTubePlayer({ videoId, title }: { videoId: string; title: string }) {
-  const containerId = `yt-player-${videoId}`;
-  const playerRef = useRef<any>(null);
-  const [apiReady, setApiReady] = useState(false);
-  const [timedOut, setTimedOut] = useState(false);
-
-  // Load the YouTube IFrame API script once globally
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-
-    if (window.YT && window.YT.Player) { setApiReady(true); return; }
-
-    const fallback = setTimeout(() => setTimedOut(true), 2000);
-
-    const prev = window.onYouTubeIframeAPIReady;
-    window.onYouTubeIframeAPIReady = () => {
-      if (prev) prev();
-      clearTimeout(fallback);
-      setApiReady(true);
-    };
-
-    if (!document.getElementById('yt-api-script')) {
-      const s = document.createElement('script');
-      s.id = 'yt-api-script';
-      s.src = 'https://www.youtube.com/iframe_api';
-      s.onerror = () => { clearTimeout(fallback); setTimedOut(true); };
-      document.head.appendChild(s);
-    }
-    return () => clearTimeout(fallback);
-  }, []);
-
-  // Create/swap the YT.Player when API is ready or videoId changes
-  useEffect(() => {
-    if (!apiReady || timedOut || typeof window === 'undefined') return;
-    if (!window.YT || !window.YT.Player) return;
-
-    if (playerRef.current && playerRef.current.loadVideoById) {
-      playerRef.current.loadVideoById({ videoId });
-      return;
-    }
-
-    playerRef.current = new window.YT.Player(containerId, {
-      height: '100%',
-      width: '100%',
-      videoId,
-      host: 'https://www.youtube-nocookie.com',
-      playerVars: { autoplay: 1, rel: 0, playsinline: 1, controls: 1, fs: 1 },
-      events: {
-        onReady: (e: any) => e.target.playVideo(),
-        onError: () => setTimedOut(true),
-      },
-    });
-
-    return () => {
-      try { playerRef.current?.destroy?.(); } catch (_) {}
-      playerRef.current = null;
-    };
-  }, [apiReady, timedOut, videoId, containerId]);
-
-  const fallbackSrc = `https://www.youtube-nocookie.com/embed/${videoId}?rel=0&autoplay=1&playsinline=1&controls=1&fs=1`;
+  const embedSrc = `https://www.youtube-nocookie.com/embed/${videoId}?rel=0&autoplay=1&playsinline=1&controls=1&fs=1`;
 
   return (
     <div style={{ width: '100%', aspectRatio: '16/9', background: '#000', borderRadius: '1rem', position: 'relative', overflow: 'hidden' }}>
-      {timedOut ? (
-        <iframe
-          src={fallbackSrc}
-          title={title}
-          style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', border: 'none' }}
-          allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; fullscreen"
-          allowFullScreen
-        />
-      ) : (
-        <div id={containerId} style={{ width: '100%', height: '100%' }} />
-      )}
+      <iframe
+        src={embedSrc}
+        title={title}
+        style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', border: 'none' }}
+        allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; fullscreen"
+        allowFullScreen
+      />
     </div>
   );
 }
@@ -846,7 +784,7 @@ function YoutubeChannelsTab({ centerId, batchIds, isAdmin }: { centerId: string;
   const handleShareVideo = (video: Video) => {
     const shareUrl = `${window.location.origin}/dashboard?tab=youtube&channelId=${selectedChannel?.channelId}&ytVideoId=${video.youtubeId || video.id}`;
     if (navigator.share) {
-      navigator.share({ title: video.title, text: `Watch "${video.title}" on VidyaSetu!`, url: shareUrl }).catch(() => {});
+      navigator.share({ title: video.title, text: `Watch "${video.title}" on VenuTube!`, url: shareUrl }).catch(() => {});
     } else {
       navigator.clipboard.writeText(shareUrl).then(() => alert('Link copied!'));
     }

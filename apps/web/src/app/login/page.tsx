@@ -2,8 +2,8 @@
 
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { FormEvent, useState, Suspense } from 'react';
-import { login } from '@/lib/auth';
+import { FormEvent, useState, Suspense, useEffect } from 'react';
+import { login, getMe } from '@/lib/auth';
 import { Logo } from '@/components/Logo';
 import { Card, ErrorBanner, FormField } from '@/components/ui';
 
@@ -16,6 +16,27 @@ function LoginForm() {
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    // Check if user has an active session and redirect automatically
+    async function checkExistingAuth() {
+      try {
+        const user = await getMe();
+        if (user) {
+          if (redirect) {
+            router.push(redirect);
+          } else if (user.globalRole === 'SUPER_ADMIN') {
+            router.push('/super-admin');
+          } else {
+            router.push('/dashboard');
+          }
+        }
+      } catch (err) {
+        // Not authenticated, user stays on login page
+      }
+    }
+    checkExistingAuth();
+  }, [router, redirect]);
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();

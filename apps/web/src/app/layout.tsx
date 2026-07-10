@@ -16,12 +16,12 @@ const lato = Lato({
 });
 
 export const metadata: Metadata = {
-  title: 'VidyaSetu — Bridge of Knowledge',
+  title: 'VenuTube — Bridge of Knowledge',
   description: 'Devotional education platform for coaching institutes',
   appleWebApp: {
     capable: true,
     statusBarStyle: 'default',
-    title: 'VidyaSetu',
+    title: 'VenuTube',
   },
   formatDetection: { telephone: false },
 };

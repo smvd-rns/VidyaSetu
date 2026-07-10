@@ -330,7 +330,7 @@ function SuperAdminContent() {
           <div>
             <div className="flex items-center gap-2">
               <span className="h-2 w-2 rounded-full bg-violet-600 animate-pulse" />
-              <p className="text-xs font-black text-violet-600 uppercase tracking-widest">VidyaSetu Engine</p>
+              <p className="text-xs font-black text-violet-600 uppercase tracking-widest">VenuTube Engine</p>
             </div>
             <h1 className="font-sans text-3xl font-black tracking-tight text-indigo-950 mt-1 drop-shadow-sm">
               Super Admin Console

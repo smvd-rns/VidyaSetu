@@ -20,15 +20,15 @@ let accessToken: string | null = null;
 export function setAccessToken(token: string | null) {
   accessToken = token;
   if (typeof window !== 'undefined') {
-    if (token) sessionStorage.setItem('vs_access_token', token);
-    else sessionStorage.removeItem('vs_access_token');
+    if (token) localStorage.setItem('vs_access_token', token);
+    else localStorage.removeItem('vs_access_token');
   }
 }
 
 export function getAccessToken(): string | null {
   if (accessToken) return accessToken;
   if (typeof window !== 'undefined') {
-    accessToken = sessionStorage.getItem('vs_access_token');
+    accessToken = localStorage.getItem('vs_access_token');
   }
   return accessToken;
 }

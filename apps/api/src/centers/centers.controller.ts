@@ -385,8 +385,9 @@ export class CentersController {
   listVideos(
     @Param('centerId') centerId: string,
     @CurrentUser() user: RequestUser,
+    @Query('channelId') channelId?: string,
   ) {
-    return this.centersService.listVideos(centerId, user.id);
+    return this.centersService.listVideos(centerId, user.id, channelId);
   }
 
   @Get(':centerId/shorts')
