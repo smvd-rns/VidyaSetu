@@ -260,21 +260,43 @@ export class CentersService {
   }
 
   async listAllYoutubeChannels() {
-    return this.prisma.youtubeChannel.findMany({
+    const channels = await this.prisma.globalYoutubeChannel.findMany({
       orderBy: { createdAt: 'desc' },
       include: {
-        center: {
-          select: { name: true }
-        },
-        batches: {
+        subscriptions: {
           include: {
-            batch: {
+            center: {
               select: { name: true }
+            },
+            batches: {
+              include: {
+                batch: {
+                  select: { name: true }
+                }
+              }
             }
           }
         }
       }
     });
+
+    // Map to a similar structure for compatibility
+    return channels.flatMap(c => 
+      c.subscriptions.map(sub => ({
+        id: sub.id,
+        centerId: sub.centerId,
+        channelId: c.channelId,
+        title: sub.displayName ?? c.title,
+        officialTitle: c.title,
+        description: c.description,
+        thumbnail: c.thumbnail,
+        isActive: sub.isActive,
+        createdAt: sub.createdAt,
+        updatedAt: sub.updatedAt,
+        center: sub.center,
+        batches: sub.batches
+      }))
+    );
   }
 
   async getCenter(centerId: string) {
@@ -855,21 +877,39 @@ export class CentersService {
       videos = cached;
     } else {
       // Build optimized where clause. If channelId is provided, query only that channel's videos
+      // Access control: videos accessible via center's channel subscriptions
+      const centerChannelFilter = isStudent
+        ? {
+            channel: {
+              subscriptions: {
+                some: {
+                  centerId,
+                  batches: { some: { batchId: { in: batchIds } } },
+                },
+              },
+            },
+          }
+        : {
+            channel: {
+              subscriptions: { some: { centerId } },
+            },
+          };
+
       const queryWhere = channelId
         ? {
             playlist: {
               channel: {
-                centerId,
                 id: channelId,
-                ...(isStudent ? {
-                  batches: {
-                    some: {
-                      batchId: { in: batchIds }
-                    }
-                  }
-                } : {})
-              }
-            }
+                subscriptions: {
+                  some: {
+                    centerId,
+                    ...(isStudent
+                      ? { batches: { some: { batchId: { in: batchIds } } } }
+                      : {}),
+                  },
+                },
+              },
+            },
           }
         : {
             OR: [
@@ -879,33 +919,20 @@ export class CentersService {
                   subject: {
                     course: {
                       centerId,
-                      ...(isStudent ? {
-                        batchAssignments: {
-                          some: {
-                            batchId: { in: batchIds }
+                      ...(isStudent
+                        ? {
+                            batchAssignments: {
+                              some: { batchId: { in: batchIds } },
+                            },
                           }
-                        }
-                      } : {})
-                    }
-                  }
-                }
+                        : {}),
+                    },
+                  },
+                },
               },
-              // YouTube Channel Videos
-              {
-                playlist: {
-                  channel: {
-                    centerId,
-                    ...(isStudent ? {
-                      batches: {
-                        some: {
-                          batchId: { in: batchIds }
-                        }
-                      }
-                    } : {})
-                  }
-                }
-              }
-            ]
+              // YouTube Channel Videos (via subscription)
+              { playlist: centerChannelFilter },
+            ],
           };
 
       const dbVideos = await this.prisma.video.findMany({
@@ -1016,20 +1043,20 @@ export class CentersService {
               }
             }
           },
-          // YouTube Channel Videos
+          // YouTube Channel Videos (via subscription)
           {
             playlist: {
               channel: {
-                centerId,
-                ...(isStudent ? {
-                  batches: {
-                    some: {
-                      batchId: { in: batchIds }
-                    }
-                  }
-                } : {})
-              }
-            }
+                subscriptions: {
+                  some: {
+                    centerId,
+                    ...(isStudent
+                      ? { batches: { some: { batchId: { in: batchIds } } } }
+                      : {}),
+                  },
+                },
+              },
+            },
           }
         ]
       },
@@ -1255,40 +1282,48 @@ export class CentersService {
   // ─── YouTube Channels ──────────────────────────────────────────────────────
   async listYoutubeChannels(centerId: string, batchId?: string) {
     await this.ensureCenterActive(centerId);
-    
+
     const whereClause: any = { centerId };
     if (batchId) {
-      whereClause.batches = {
-        some: { batchId },
-      };
+      whereClause.batches = { some: { batchId } };
     }
 
-    const channels = await this.prisma.youtubeChannel.findMany({
+    // Query center's channel subscriptions, joining to global channel data
+    const subscriptions = await this.prisma.centerYoutubeChannel.findMany({
       where: whereClause,
       include: {
-        playlists: {
+        globalChannel: {
           include: {
-            _count: {
-              select: { videos: true }
-            }
-          }
+            playlists: {
+              include: { _count: { select: { videos: true } } },
+            },
+          },
         },
-        batches: {
-          select: {
-            batchId: true,
-          }
-        }
-      }
+        batches: { select: { batchId: true } },
+      },
     });
 
-    return channels.map((c) => {
-      const playlistsCount = c.playlists.length;
-      const videosCount = c.playlists.reduce((sum, p) => sum + p._count.videos, 0);
-      const batchIds = c.batches.map((b) => b.batchId);
-      
-      const { playlists, batches, ...rest } = c as any;
+    return subscriptions.map((sub) => {
+      const playlistsCount = sub.globalChannel.playlists.length;
+      const videosCount = sub.globalChannel.playlists.reduce(
+        (sum: number, p: any) => sum + p._count.videos,
+        0,
+      );
+      const batchIds = sub.batches.map((b) => b.batchId);
       return {
-        ...rest,
+        id: sub.id,
+        centerId: sub.centerId,
+        // Return channelId as the YouTube channel ID for API compatibility
+        channelId: sub.globalChannel.channelId,
+        globalChannelId: sub.globalChannelId,
+        // Prefer center's custom displayName, fall back to official title
+        title: sub.displayName ?? sub.globalChannel.title,
+        officialTitle: sub.globalChannel.title,
+        description: sub.globalChannel.description,
+        thumbnail: sub.globalChannel.thumbnail,
+        isActive: sub.isActive,
+        lastSyncedAt: sub.globalChannel.lastSyncedAt,
+        createdAt: sub.createdAt,
         batchIds,
         playlistsCount,
         videosCount,
@@ -1298,167 +1333,155 @@ export class CentersService {
 
   async listChannelPlaylists(centerId: string, channelId: string, userId?: string) {
     await this.ensureCenterActive(centerId);
-    const channel = await this.prisma.youtubeChannel.findUnique({
-      where: { centerId_channelId: { centerId, channelId } },
+    // channelId here is the YouTube channel ID (globalChannel.channelId)
+    const sub = await this.prisma.centerYoutubeChannel.findFirst({
+      where: { centerId, globalChannel: { channelId } },
+      include: { globalChannel: true },
     });
-    if (!channel) throw new NotFoundException('YouTube channel not found.');
+    if (!sub) throw new NotFoundException('YouTube channel not found.');
 
     const playlists = await this.prisma.youtubePlaylist.findMany({
-      where: { channelId: channel.id },
-      include: {
-        _count: {
-          select: { videos: true }
-        }
-      }
+      where: { channelId: sub.globalChannelId },
+      include: { _count: { select: { videos: true } } },
     });
 
     let likedPlaylistIds = new Set<string>();
     if (userId) {
       const membership = await this.prisma.centerMembership.findUnique({
-        where: { userId_centerId: { userId, centerId } }
+        where: { userId_centerId: { userId, centerId } },
       });
       if (membership) {
         const userLikes = await this.prisma.playlistLike.findMany({
           where: { membershipId: membership.id },
-          select: { playlistId: true }
+          select: { playlistId: true },
         });
-        likedPlaylistIds = new Set(userLikes.map(l => l.playlistId));
+        likedPlaylistIds = new Set(userLikes.map((l) => l.playlistId));
       }
     }
 
-    return playlists.map(p => ({
-      ...p,
-      liked: likedPlaylistIds.has(p.id)
-    }));
+    return playlists.map((p) => ({ ...p, liked: likedPlaylistIds.has(p.id) }));
   }
 
   async listPlaylistVideos(centerId: string, playlistId: string, userId?: string) {
     await this.ensureCenterActive(centerId);
 
     const playlist = await this.prisma.youtubePlaylist.findUnique({
-      where: { id: playlistId }
+      where: { id: playlistId },
     });
     if (!playlist) throw new NotFoundException('Playlist not found.');
 
     const dbVideos = await this.prisma.video.findMany({
       where: { playlistId: playlist.id },
       include: {
-        _count: {
-          select: { likes: true }
-        },
-        playlist: {
-          include: {
-            channel: true
-          }
-        }
+        _count: { select: { likes: true } },
+        playlist: { include: { channel: true } },
       },
-      orderBy: [
-        { publishedAt: 'desc' },
-        { createdAt: 'desc' }
-      ]
+      orderBy: [{ publishedAt: 'desc' }, { createdAt: 'desc' }],
     });
 
     const videos = dbVideos.map((v) => {
       const { _count, ...rest } = v as any;
-      return {
-        ...rest,
-        likesCount: _count?.likes || 0,
-      };
+      return { ...rest, likesCount: _count?.likes || 0 };
     });
 
     let likedVideoIds = new Set<string>();
     if (userId) {
       const membership = await this.prisma.centerMembership.findUnique({
-        where: { userId_centerId: { userId, centerId } }
+        where: { userId_centerId: { userId, centerId } },
       });
       if (membership) {
         const userLikes = await this.prisma.videoLike.findMany({
           where: { membershipId: membership.id },
-          select: { videoId: true }
+          select: { videoId: true },
         });
-        likedVideoIds = new Set(userLikes.map(l => l.videoId));
+        likedVideoIds = new Set(userLikes.map((l) => l.videoId));
       }
     }
 
-    return videos.map(v => ({
-      ...v,
-      liked: likedVideoIds.has(v.id)
-    }));
+    return videos.map((v) => ({ ...v, liked: likedVideoIds.has(v.id) }));
   }
 
   async createYoutubeChannel(centerId: string, dto: CreateYoutubeChannelDto) {
     await this.ensureCenterActive(centerId);
-    const created = await this.prisma.youtubeChannel.upsert({
-      where: { centerId_channelId: { centerId, channelId: dto.channelId } },
+
+    // Step 1: Find-or-create the global channel record
+    let globalChannel = await this.prisma.globalYoutubeChannel.findUnique({
+      where: { channelId: dto.channelId },
+    });
+
+    if (!globalChannel) {
+      // Brand new channel — create global record
+      globalChannel = await this.prisma.globalYoutubeChannel.create({
+        data: {
+          channelId: dto.channelId,
+          title: dto.title,
+          description: dto.description,
+          thumbnail: dto.thumbnail,
+        },
+      });
+    } else {
+      // Update global metadata in case YouTube title/thumbnail changed
+      globalChannel = await this.prisma.globalYoutubeChannel.update({
+        where: { id: globalChannel.id },
+        data: {
+          title: dto.title,
+          description: dto.description,
+          thumbnail: dto.thumbnail,
+        },
+      });
+    }
+
+    // Step 2: Upsert the center subscription
+    const sub = await this.prisma.centerYoutubeChannel.upsert({
+      where: { centerId_globalChannelId: { centerId, globalChannelId: globalChannel.id } },
       create: {
         centerId,
-        channelId: dto.channelId,
-        title: dto.title,
-        description: dto.description,
-        thumbnail: dto.thumbnail,
+        globalChannelId: globalChannel.id,
+        displayName: dto.displayName ?? null,
       },
       update: {
-        title: dto.title,
-        description: dto.description,
-        thumbnail: dto.thumbnail,
+        isActive: true,
+        displayName: dto.displayName ?? undefined,
       },
     });
 
+    // Step 3: Update batch assignments for this center's subscription
     if (dto.batchIds !== undefined) {
-      await this.prisma.batchYoutubeChannel.deleteMany({
-        where: { youtubeChannelId: created.id },
+      await this.prisma.batchCenterChannel.deleteMany({
+        where: { centerYoutubeChannelId: sub.id },
       });
-
       if (dto.batchIds.length > 0) {
-        await this.prisma.batchYoutubeChannel.createMany({
+        await this.prisma.batchCenterChannel.createMany({
           data: dto.batchIds.map((batchId) => ({
             batchId,
-            youtubeChannelId: created.id,
+            centerYoutubeChannelId: sub.id,
           })),
         });
       }
     }
 
-
     await this.redis.del(`youtube:videos:${centerId}`);
-    return created;
+    return { ...sub, channelId: dto.channelId, title: sub.displayName ?? dto.title };
   }
 
   async deleteYoutubeChannel(centerId: string, channelId: string) {
     await this.ensureCenterActive(centerId);
-    
-    const channel = await this.prisma.youtubeChannel.findUnique({
-      where: { centerId_channelId: { centerId, channelId } },
-      include: { playlists: true }
+
+    // Delete the CENTER SUBSCRIPTION only — shared global data (playlists/videos) is preserved
+    const sub = await this.prisma.centerYoutubeChannel.findFirst({
+      where: { centerId, globalChannel: { channelId } },
     });
+    if (!sub) throw new NotFoundException('YouTube channel subscription not found.');
 
-    if (channel) {
-      const playlistIds = channel.playlists.map((p) => p.id);
-      
-      // Delete child associations first
-      await this.prisma.videoLike.deleteMany({
-        where: { video: { playlistId: { in: playlistIds } } }
-      });
-
-      await this.prisma.studentProgress.deleteMany({
-        where: { video: { playlistId: { in: playlistIds } } }
-      });
-
-      // Delete the videos
-      await this.prisma.video.deleteMany({
-        where: { playlistId: { in: playlistIds } }
-      });
-    }
-
-    const deleted = await this.prisma.youtubeChannel.delete({
-      where: { centerId_channelId: { centerId, channelId } },
+    const deleted = await this.prisma.centerYoutubeChannel.delete({
+      where: { id: sub.id },
     });
     await this.redis.del(`youtube:videos:${centerId}`);
     return deleted;
   }
 
-  getSyncStatus(centerId: string, channelId: string) {
-    const key = `${centerId}:${channelId}`;
+  getSyncStatus(channelId: string) {
+    const key = `global:${channelId}`;
     const progress = this.syncProgress.get(key);
     if (!progress) {
       return {
@@ -1473,18 +1496,16 @@ export class CentersService {
       };
     }
 
-    // Auto-cleanup terminal states after 10s (enough time for frontend to read completed status)
+    // Auto-cleanup terminal states after 10s
     if (['completed', 'failed', 'cancelled'].includes(progress.status)) {
-      setTimeout(() => {
-        this.syncProgress.delete(key);
-      }, 10000);
+      setTimeout(() => { this.syncProgress.delete(key); }, 10000);
     }
 
     return progress;
   }
 
-  cancelSync(centerId: string, channelId: string) {
-    const key = `${centerId}:${channelId}`;
+  cancelSync(channelId: string) {
+    const key = `global:${channelId}`;
     const progress = this.syncProgress.get(key);
     if (progress && progress.status === 'syncing') {
       progress.status = 'cancelled';
@@ -1498,16 +1519,17 @@ export class CentersService {
   async handleScheduledSync() {
     console.log('Starting scheduled YouTube channel sync...');
     try {
-      const activeChannels = await this.prisma.youtubeChannel.findMany({
-        where: { isActive: true },
-        select: { centerId: true, channelId: true },
+      // Sync each UNIQUE global channel once — shared across all centers
+      const activeGlobalChannels = await this.prisma.globalYoutubeChannel.findMany({
+        where: { subscriptions: { some: { isActive: true } } },
+        select: { id: true, channelId: true },
       });
 
-      console.log(`Found ${activeChannels.length} active channels to sync.`);
-      for (const channel of activeChannels) {
+      console.log(`Found ${activeGlobalChannels.length} unique global channels to sync.`);
+      for (const channel of activeGlobalChannels) {
         try {
-          await this.syncYoutubeChannelVideos(channel.centerId, channel.channelId, false);
-          console.log(`Scheduled sync triggered for channel ${channel.channelId} in center ${channel.centerId}`);
+          await this.syncYoutubeChannelVideos(channel.channelId, false);
+          console.log(`Scheduled sync triggered for global channel ${channel.channelId}`);
         } catch (err) {
           console.error(`Failed scheduled sync for channel ${channel.channelId}:`, err);
         }
@@ -1517,21 +1539,22 @@ export class CentersService {
     }
   }
 
-  async syncYoutubeChannelVideos(centerId: string, channelId: string, force = false) {
-    await this.ensureCenterActive(centerId);
-    
-    const key = `${centerId}:${channelId}`;
+  async syncYoutubeChannelVideos(channelId: string, force = false, centerId?: string) {
+    // centerId is only used for ensureCenterActive check when called from API
+    if (centerId) await this.ensureCenterActive(centerId);
+
+    const key = `global:${channelId}`;
     const current = this.syncProgress.get(key);
     if (current && current.status === 'syncing') {
       return { started: false, message: 'Sync already in progress.' };
     }
 
-    const channelMeta = await this.prisma.youtubeChannel.findUnique({
-      where: { centerId_channelId: { centerId, channelId } },
+    const globalChannel = await this.prisma.globalYoutubeChannel.findUnique({
+      where: { channelId },
       select: { id: true, lastSyncedAt: true },
     });
 
-    const sinceDate = (!force && channelMeta?.lastSyncedAt) ? channelMeta.lastSyncedAt : null;
+    const sinceDate = (!force && globalChannel?.lastSyncedAt) ? globalChannel.lastSyncedAt : null;
     const syncMode = sinceDate ? 'INCREMENTAL' : 'FULL_SCAN';
 
     const initial = {
@@ -1549,74 +1572,63 @@ export class CentersService {
     this.syncProgress.set(key, initial);
 
     // Run the sync process in the background
-    this.runSyncInBackground(centerId, channelId, sinceDate).catch((err) => {
+    this.runSyncInBackground(channelId, sinceDate).catch((err) => {
       console.error(`Background sync failed for channel ${channelId}:`, err);
     });
 
     return { started: true, syncMode };
   }
 
-  private async runSyncInBackground(centerId: string, channelId: string, sinceDate: Date | null = null) {
-    const key = `${centerId}:${channelId}`;
+  private async runSyncInBackground(channelId: string, sinceDate: Date | null = null) {
+    const key = `global:${channelId}`;
     const progress = this.syncProgress.get(key);
     try {
       const apiKey = process.env.YOUTUBE_API_KEY;
-      if (!apiKey) {
-        throw new Error('YouTube API key is not configured.');
-      }
+      if (!apiKey) throw new Error('YouTube API key is not configured.');
 
-      const channelRecord = await this.prisma.youtubeChannel.findUnique({
-        where: { centerId_channelId: { centerId, channelId } },
+      const globalChannel = await this.prisma.globalYoutubeChannel.findUnique({
+        where: { channelId },
         include: { playlists: true },
       });
-      if (!channelRecord) {
-        throw new Error('YouTube channel not found.');
-      }
+      if (!globalChannel) throw new Error('Global YouTube channel not found.');
 
-      // Stage 1: Resolve playlists
-      // On incremental sync: reuse playlists already in DB (zero API tokens)
-      // On full scan: fetch from YouTube API and upsert into DB
       progress.stage = 'fetching_playlists';
       let playlistsToSync: any[];
 
-      if (sinceDate && channelRecord.playlists.length > 0) {
-        // INCREMENTAL: use existing DB playlists, no API call needed
-        playlistsToSync = channelRecord.playlists;
-        progress.playlistsTotal = playlistsToSync.length;
-      } else {
-        // FULL SCAN: fetch uploads playlist + all channel playlists from YouTube
-        const chanRes = await fetch(
-          `https://www.googleapis.com/youtube/v3/channels?part=contentDetails&id=${channelId}&key=${apiKey}`
-        );
-        const chanData = await chanRes.json() as any;
-        if (!chanData.items || chanData.items.length === 0) {
-          throw new Error('Failed to find channel details from YouTube API.');
-        }
-        const uploadsPlaylistId = chanData.items[0].contentDetails.relatedPlaylists.uploads;
+      // STEP 1: New playlist discovery — always fetch playlist list (1 API call)
+      // Compare with DB and upsert any new playlists found.
+      const chanRes = await fetch(
+        `https://www.googleapis.com/youtube/v3/channels?part=contentDetails&id=${channelId}&key=${apiKey}`
+      );
+      const chanData = await chanRes.json() as any;
+      if (!chanData.items || chanData.items.length === 0) {
+        throw new Error('Failed to find channel details from YouTube API.');
+      }
+      const uploadsPlaylistId = chanData.items[0].contentDetails.relatedPlaylists.uploads;
 
-        const playlistsRes = await fetch(
-          `https://www.googleapis.com/youtube/v3/playlists?part=snippet&channelId=${channelId}&maxResults=50&key=${apiKey}`
-        );
-        const playlistsData = await playlistsRes.json() as any;
+      // Upsert uploads playlist
+      await this.prisma.youtubePlaylist.upsert({
+        where: { channelId_playlistId: { channelId: globalChannel.id, playlistId: uploadsPlaylistId } },
+        create: {
+          channelId: globalChannel.id,
+          playlistId: uploadsPlaylistId,
+          title: `${globalChannel.title} Uploads`,
+          description: 'Latest uploads synced automatically',
+        },
+        update: { title: `${globalChannel.title} Uploads` },
+      });
 
-        const uploadsPlaylistRecord = await this.prisma.youtubePlaylist.upsert({
-          where: { channelId_playlistId: { channelId: channelRecord.id, playlistId: uploadsPlaylistId } },
-          create: {
-            channelId: channelRecord.id,
-            playlistId: uploadsPlaylistId,
-            title: `${channelRecord.title} Uploads`,
-            description: 'Latest uploads synced automatically',
-          },
-          update: { title: `${channelRecord.title} Uploads` },
-        });
-
-        playlistsToSync = [uploadsPlaylistRecord];
+      // Fetch all playlists and upsert new ones
+      let plPageToken: string | undefined = undefined;
+      do {
+        const plUrl = `https://www.googleapis.com/youtube/v3/playlists?part=snippet&channelId=${channelId}&maxResults=50&key=${apiKey}${plPageToken ? `&pageToken=${plPageToken}` : ''}`;
+        const playlistsData = await (await fetch(plUrl)).json() as any;
         if (playlistsData.items?.length > 0) {
           for (const item of playlistsData.items) {
-            const playlistRecord = await this.prisma.youtubePlaylist.upsert({
-              where: { channelId_playlistId: { channelId: channelRecord.id, playlistId: item.id } },
+            await this.prisma.youtubePlaylist.upsert({
+              where: { channelId_playlistId: { channelId: globalChannel.id, playlistId: item.id } },
               create: {
-                channelId: channelRecord.id,
+                channelId: globalChannel.id,
                 playlistId: item.id,
                 title: item.snippet.title,
                 description: item.snippet.description || '',
@@ -1628,43 +1640,57 @@ export class CentersService {
                 thumbnail: item.snippet.thumbnails?.default?.url || '',
               },
             });
-            playlistsToSync.push(playlistRecord);
           }
         }
-        progress.playlistsTotal = playlistsToSync.length;
+        plPageToken = playlistsData.nextPageToken;
+      } while (plPageToken);
+
+      // STEP 2: For incremental sync, only sync playlists active in last 2 days
+      const twoDaysAgo = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000);
+      const allDbPlaylists = await this.prisma.youtubePlaylist.findMany({
+        where: { channelId: globalChannel.id },
+      });
+
+      if (sinceDate) {
+        // INCREMENTAL: only playlists that had a video in last 2 days OR never synced
+        playlistsToSync = allDbPlaylists.filter(
+          (p) => !p.lastVideoAt || p.lastVideoAt >= twoDaysAgo
+        );
+      } else {
+        // FULL SCAN: sync everything
+        playlistsToSync = allDbPlaylists;
       }
 
-      // Stage 2: Fetch new videos for each playlist
-      // INCREMENTAL: YouTube returns items newest-first. Stop the moment we hit a
-      //              video older than sinceDate — everything after it is already synced.
-      // FULL SCAN:   Collect all items across all pages.
+      progress.playlistsTotal = playlistsToSync.length;
+
+      // STEP 3: Fetch new videos for each playlist
       progress.stage = 'fetching_videos';
-      const allVideoItems = [];
+      const allVideoItems: any[] = [];
       for (const playlist of playlistsToSync) {
-        // Check for cancellation between playlists
         if (progress.status === 'cancelled') return;
         try {
           let pageToken: string | null = null;
           let doneWithPlaylist = false;
+          let latestVideoAt: Date | null = null;
 
           while (!doneWithPlaylist) {
-            const url = `https://www.googleapis.com/youtube/v3/playlistItems?part=snippet,status&playlistId=${playlist.playlistId}&maxResults=50&key=${apiKey}${
-              pageToken ? `&pageToken=${pageToken}` : ''
-            }`;
-            const listRes = await fetch(url);
-            const listData = await listRes.json() as any;
+            const url = `https://www.googleapis.com/youtube/v3/playlistItems?part=snippet,status&playlistId=${playlist.playlistId}&maxResults=50&key=${apiKey}${pageToken ? `&pageToken=${pageToken}` : ''}`;
+            const listData = await (await fetch(url)).json() as any;
 
             if (listData.items) {
               for (const item of listData.items) {
                 if (item.status?.privacyStatus === 'private') continue;
+                const publishedAt = item.snippet.publishedAt ? new Date(item.snippet.publishedAt) : null;
 
-                // INCREMENTAL CUT-OFF: stop when we reach videos older than sinceDate
-                if (sinceDate) {
-                  const publishedAt = new Date(item.snippet.publishedAt);
-                  if (publishedAt <= sinceDate) {
-                    doneWithPlaylist = true; // stop paging this playlist entirely
-                    break;
-                  }
+                // Track the most recent video date for lastVideoAt
+                if (publishedAt && (!latestVideoAt || publishedAt > latestVideoAt)) {
+                  latestVideoAt = publishedAt;
+                }
+
+                // INCREMENTAL CUT-OFF
+                if (sinceDate && publishedAt && publishedAt <= sinceDate) {
+                  doneWithPlaylist = true;
+                  break;
                 }
 
                 allVideoItems.push({
@@ -1672,12 +1698,11 @@ export class CentersService {
                   title: item.snippet.title,
                   description: item.snippet.description || '',
                   playlistId: playlist.id,
-                  publishedAt: item.snippet.publishedAt ? new Date(item.snippet.publishedAt) : null,
+                  publishedAt,
                 });
               }
             }
 
-            // Continue to next page only on full scan, and only if there is one
             if (!doneWithPlaylist && listData.nextPageToken && !sinceDate) {
               pageToken = listData.nextPageToken;
             } else {
@@ -1685,6 +1710,13 @@ export class CentersService {
             }
           }
 
+          // Update lastVideoAt on this playlist
+          if (latestVideoAt) {
+            await this.prisma.youtubePlaylist.update({
+              where: { id: playlist.id },
+              data: { lastVideoAt: latestVideoAt },
+            });
+          }
           progress.playlistsProcessed++;
         } catch (err) {
           console.error(`Failed to fetch items for playlist ${playlist.playlistId}:`, err);
@@ -1693,64 +1725,48 @@ export class CentersService {
 
       progress.videosTotal = allVideoItems.length;
 
-      // Stage 3: Fetch durations
+      // STEP 4: Fetch durations
       progress.stage = 'fetching_durations';
       const uniqueVideoIds = Array.from(new Set(allVideoItems.map((v) => v.youtubeId)));
       const durationMap = new Map<string, number>();
 
-      // Check database to see if we already have duration for these videos to save API tokens
       const existingVideos = await this.prisma.video.findMany({
         where: { youtubeId: { in: uniqueVideoIds }, duration: { not: null } },
         select: { youtubeId: true, duration: true },
       });
-      for (const ev of existingVideos) {
-        durationMap.set(ev.youtubeId, ev.duration!);
-      }
+      for (const ev of existingVideos) durationMap.set(ev.youtubeId, ev.duration!);
 
       const videoIdsToQuery = uniqueVideoIds.filter((id) => !durationMap.has(id));
-
       for (let i = 0; i < videoIdsToQuery.length; i += 50) {
-        // Check for cancellation between duration batches
         if (progress.status === 'cancelled') return;
         const chunk = videoIdsToQuery.slice(i, i + 50);
-        const idsParam = chunk.join(',');
         try {
-          const detailRes = await fetch(
-            `https://www.googleapis.com/youtube/v3/videos?part=contentDetails&id=${idsParam}&key=${apiKey}`
-          );
-          const detailData = await detailRes.json() as any;
+          const detailData = await (await fetch(
+            `https://www.googleapis.com/youtube/v3/videos?part=contentDetails&id=${chunk.join(',')}&key=${apiKey}`
+          )).json() as any;
           if (detailData.items) {
-            for (const detailItem of detailData.items) {
-              const isoDuration = detailItem.contentDetails?.duration;
-              const durationSec = parseISO8601Duration(isoDuration);
-              durationMap.set(detailItem.id, durationSec);
+            for (const d of detailData.items) {
+              durationMap.set(d.id, parseISO8601Duration(d.contentDetails?.duration));
             }
           }
-        } catch (err) {
-          console.error('Failed to fetch duration batch:', err);
-        }
+        } catch (err) { console.error('Failed to fetch duration batch:', err); }
       }
 
-      // Stage 4: Saving to DB
+      // STEP 5: Save to DB
       progress.stage = 'saving_to_db';
       let savedCount = 0;
-
-      // 1. Fetch all existing videos for the playlists being synced in a single query
       const playlistDbIds = playlistsToSync.map((p) => p.id);
       const existingVideosInPlaylists = await this.prisma.video.findMany({
         where: { playlistId: { in: playlistDbIds } },
         select: { id: true, youtubeId: true, playlistId: true },
       });
-
       const existingMap = new Map<string, string>();
       for (const ev of existingVideosInPlaylists) {
         existingMap.set(`${ev.youtubeId}:${ev.playlistId}`, ev.id);
       }
 
-      // 2. Perform sequential upserts (prevents parallel connection flooding)
       for (const item of allVideoItems) {
         if (progress.status === 'cancelled') return;
-
         const duration = durationMap.get(item.youtubeId) || null;
         const isShort = duration !== null && duration > 0 && duration < 180;
         const existingId = existingMap.get(`${item.youtubeId}:${item.playlistId}`);
@@ -1776,24 +1792,31 @@ export class CentersService {
         });
 
         savedCount++;
-        // Update progress every 10 videos
         if (savedCount % 10 === 0 || savedCount === allVideoItems.length) {
           progress.videosProcessed = savedCount;
         }
       }
 
-      await this.prisma.youtubeChannel.update({
-        where: { centerId_channelId: { centerId, channelId } },
+      // Update lastSyncedAt on the global channel
+      await this.prisma.globalYoutubeChannel.update({
+        where: { channelId },
         data: { lastSyncedAt: new Date() },
       });
 
-      await this.redis.del(`youtube:videos:${centerId}`);
+      // Invalidate cache for all subscribed centers
+      const subscribedCenterIds = await this.prisma.centerYoutubeChannel.findMany({
+        where: { globalChannel: { channelId } },
+        select: { centerId: true },
+      });
+      for (const { centerId } of subscribedCenterIds) {
+        await this.redis.del(`youtube:videos:${centerId}`);
+      }
 
       progress.status = 'completed';
       progress.stage = 'done';
       progress.syncedCount = savedCount;
 
-      this.fillMissingMetadataInBackground(centerId, channelId).catch((err) => {
+      this.fillMissingMetadataInBackground(channelId).catch((err) => {
         console.error('Failed to trigger background metadata repair:', err);
       });
     } catch (err) {
@@ -1803,18 +1826,18 @@ export class CentersService {
     }
   }
 
-  async fillMissingMetadataInBackground(centerId: string, channelId: string) {
+  async fillMissingMetadataInBackground(channelId: string) {
     const apiKey = process.env.YOUTUBE_API_KEY;
     if (!apiKey) return;
 
     try {
-      const channel = await this.prisma.youtubeChannel.findUnique({
-        where: { centerId_channelId: { centerId, channelId } },
-        include: { playlists: true }
+      const globalChannel = await this.prisma.globalYoutubeChannel.findUnique({
+        where: { channelId },
+        include: { playlists: true },
       });
-      if (!channel) return;
+      if (!globalChannel) return;
 
-      const playlistIds = channel.playlists.map(p => p.id);
+      const playlistIds = globalChannel.playlists.map((p) => p.id);
       
       const videosToRepair = await this.prisma.video.findMany({
         where: {

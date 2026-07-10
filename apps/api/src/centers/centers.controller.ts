@@ -512,7 +512,7 @@ export class CentersController {
     @Param('channelId') channelId: string,
     @Query('force') force?: string,
   ) {
-    return this.centersService.syncYoutubeChannelVideos(centerId, channelId, force === 'true');
+    return this.centersService.syncYoutubeChannelVideos(channelId, force === 'true', centerId);
   }
 
   @Get(':centerId/youtube/channels/:channelId/sync-status')
@@ -520,7 +520,7 @@ export class CentersController {
   @CenterIdParam('centerId')
   @CenterRoles(CenterMemberRole.ADMIN, CenterMemberRole.TEACHER, CenterMemberRole.STAFF)
   getSyncStatus(@Param('centerId') centerId: string, @Param('channelId') channelId: string) {
-    return this.centersService.getSyncStatus(centerId, channelId);
+    return this.centersService.getSyncStatus(channelId);
   }
 
   @Delete(':centerId/youtube/channels/:channelId/sync')
@@ -528,7 +528,7 @@ export class CentersController {
   @CenterIdParam('centerId')
   @CenterRoles(CenterMemberRole.ADMIN, CenterMemberRole.TEACHER, CenterMemberRole.STAFF)
   cancelSync(@Param('centerId') centerId: string, @Param('channelId') channelId: string) {
-    return this.centersService.cancelSync(centerId, channelId);
+    return this.centersService.cancelSync(channelId);
   }
 
   @Post(':centerId/media/upload')

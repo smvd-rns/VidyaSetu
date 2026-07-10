@@ -259,6 +259,18 @@ function PendingApprovalScreen({ user, pendingMemberships, onLogout, onRefresh }
           </form>
         </div>
 
+        <div className="text-center bg-white/5 border border-white/10 rounded-2xl p-4">
+          <p className="text-xs text-white/70 font-semibold leading-relaxed">
+            Want to open and manage your own institute?
+          </p>
+          <Link 
+            href="/apply-center" 
+            className="mt-2.5 inline-block w-full text-center py-2.5 rounded-xl bg-violet-600 hover:bg-violet-700 text-white text-xs font-black uppercase tracking-wider transition shadow-md cursor-pointer"
+          >
+            🏫 Apply to open a Center
+          </Link>
+        </div>
+
         <p className="text-xs text-white/40">Please check back later or contact your center admin.</p>
         <button onClick={onLogout} className="rounded-xl bg-white/20 hover:bg-white/30 border border-white/30 text-white font-bold px-6 py-2.5 text-sm transition cursor-pointer backdrop-blur-md">Logout</button>
       </div>
@@ -566,6 +578,12 @@ function YoutubeChannelsTab({ centerId, batchIds, isAdmin }: { centerId: string;
   const router = useRouter();
   const searchParams = useSearchParams();
   const pathname = usePathname();
+  // Stable ref for pathname so useEffect closures can read it without adding
+  // pathname/router to the effect dependency array (which causes reload on every URL push)
+  const pathnameRef = useRef(pathname);
+  pathnameRef.current = pathname;
+  const routerRef = useRef(router);
+  routerRef.current = router;
 
   const [channels, setChannels] = useState<YoutubeChannel[]>([]);
   const [videos, setVideos] = useState<Video[]>([]);
@@ -637,24 +655,29 @@ function YoutubeChannelsTab({ centerId, batchIds, isAdmin }: { centerId: string;
       .catch((err) => console.error('Failed to load video description:', err));
   }, [centerId, selectedVideo?.id]);
 
-  const scrollToPlayer = () => {
-    setTimeout(() => {
-      const el = document.getElementById('video-player-anchor');
-      if (el) {
-        el.scrollIntoView({ behavior: 'smooth', block: 'start' });
-      }
-    }, 150);
-  };
+  // Scroll to player whenever the selected video URL param changes (after navigation settles)
+  const prevVideoIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    const currentVideoId = searchParams.get('ytVideoId');
+    if (currentVideoId && currentVideoId !== prevVideoIdRef.current) {
+      prevVideoIdRef.current = currentVideoId;
+      setTimeout(() => {
+        const el = document.getElementById('video-player-anchor');
+        if (el) {
+          el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+      }, 200);
+    }
+  }, [searchParams]);
 
   const setSelectedVideo = (video: Video | null) => {
     const params = new URLSearchParams(searchParams.toString());
     if (video) {
       params.set('ytVideoId', video.youtubeId || video.id);
-      scrollToPlayer();
     } else {
       params.delete('ytVideoId');
     }
-    router.push(`${pathname}?${params.toString()}`, { scroll: false });
+    router.push(`${pathnameRef.current}?${params.toString()}`, { scroll: false });
   };
 
   useEffect(() => { setDescExpanded(false); }, [selectedVideo?.id]);
@@ -710,7 +733,7 @@ function YoutubeChannelsTab({ centerId, batchIds, isAdmin }: { centerId: string;
       if (!searchParamsRef.current.get('ytVideoId') && list.length > 0) {
         const p = new URLSearchParams(searchParamsRef.current.toString());
         p.set('ytVideoId', list[0].youtubeId || list[0].id);
-        router.replace(`${pathname}?${p.toString()}`, { scroll: false });
+        routerRef.current.replace(`${pathnameRef.current}?${p.toString()}`, { scroll: false });
       }
     };
 
@@ -738,7 +761,7 @@ function YoutubeChannelsTab({ centerId, batchIds, isAdmin }: { centerId: string;
       }).finally(() => setLoadingVideos(false));
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [centerId, selectedChannel?.id, selectedPlaylist?.id, pathname, router, batchIds, isAdmin]);
+  }, [centerId, selectedChannel?.id, selectedPlaylist?.id, batchIds, isAdmin]);
 
   const handleLoadMore = async (e: React.MouseEvent<HTMLButtonElement>) => {
     e.currentTarget.blur();
@@ -1197,9 +1220,9 @@ function YoutubeChannelsTab({ centerId, batchIds, isAdmin }: { centerId: string;
                       params.set('playlistId', pl.playlistId);
                       setSubTab('videos');
                       setIsPlayingLive(false);
-                      if (sampleVid) { params.set('ytVideoId', sampleVid.youtubeId || sampleVid.id); scrollToPlayer(); }
+                      if (sampleVid) { params.set('ytVideoId', sampleVid.youtubeId || sampleVid.id); }
                       else { params.delete('ytVideoId'); }
-                      router.push(`${pathname}?${params.toString()}`);
+                      router.push(`${pathnameRef.current}?${params.toString()}`, { scroll: false });
                     }}
                     className="group bg-white/70 backdrop-blur-xl rounded-2xl border border-white/80 overflow-hidden hover:shadow-xl transition-all cursor-pointer"
                   >

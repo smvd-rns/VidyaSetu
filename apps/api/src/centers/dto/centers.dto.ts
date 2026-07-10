@@ -195,6 +195,10 @@ export class CreateYoutubeChannelDto {
 
   @IsOptional()
   @IsString()
+  displayName?: string;
+
+  @IsOptional()
+  @IsString()
   description?: string;
 
   @IsOptional()

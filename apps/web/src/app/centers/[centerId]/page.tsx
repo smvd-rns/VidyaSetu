@@ -808,6 +808,7 @@ function CenterContent() {
         body: JSON.stringify({
           channelId: ytChanId,
           title: ytChanTitle,
+          displayName: ytChanTitle,
           description: ytChanDesc,
           thumbnail: ytChanThumb,
           batchIds: ytSelectedBatchIds,
