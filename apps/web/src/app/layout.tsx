@@ -1,19 +1,6 @@
 import type { Metadata } from 'next';
-import { Cormorant_Garamond, Lato } from 'next/font/google';
 import './globals.css';
 import { KeepAlive } from '@/components/KeepAlive';
-
-const cormorant = Cormorant_Garamond({
-  variable: '--font-cormorant',
-  subsets: ['latin'],
-  weight: ['500', '600', '700'],
-});
-
-const lato = Lato({
-  variable: '--font-lato',
-  subsets: ['latin'],
-  weight: ['400', '700'],
-});
 
 export const metadata: Metadata = {
   title: 'VenuTube — Bridge of Knowledge',
@@ -42,7 +29,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" className={`${cormorant.variable} ${lato.variable} h-full`}>
+    <html lang="en" className="h-full">
       <body className="min-h-full flex flex-col bg-devotional antialiased">
         <KeepAlive />
         {children}
