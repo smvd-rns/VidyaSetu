@@ -110,8 +110,8 @@ function LoginForm() {
 export default function LoginPage() {
   return (
     <div className="flex flex-1 flex-col items-center justify-center px-4 py-12 bg-slate-50 min-h-screen">
-      <div className="mb-8 text-center animate-fadeIn">
-        <Logo size="md" showTagline />
+      <div className="mb-8 text-center animate-fadeIn flex justify-center">
+        <Logo size="md" showTagline hideIcon className="justify-center" />
       </div>
       <Suspense fallback={<div className="text-slate-400">Loading form...</div>}>
         <LoginForm />

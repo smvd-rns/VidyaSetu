@@ -15,6 +15,8 @@ import {
 import { PrismaService } from '../prisma/prisma.service';
 import { GoogleDriveService } from './google-drive.service';
 import { RedisService } from './redis.service';
+import { ConfigService } from '@nestjs/config';
+import { StorageService } from '../storage/storage.service';
 import {
   ApplyCenterDto,
   ReviewApplicationDto,
@@ -43,7 +45,9 @@ export class CentersService {
   constructor(
     private prisma: PrismaService,
     private googleDrive: GoogleDriveService,
-    private redis: RedisService
+    private redis: RedisService,
+    private config: ConfigService,
+    private storageService: StorageService
   ) {}
 
   private slugify(name: string) {
@@ -866,9 +870,26 @@ export class CentersService {
       }
     }
 
+    let targetGlobalChannelId = channelId;
+    if (channelId) {
+      const resolvedChannel = await this.prisma.globalYoutubeChannel.findFirst({
+        where: {
+          OR: [
+            { id: channelId },
+            { channelId: channelId },
+            { subscriptions: { some: { id: channelId } } },
+          ],
+        },
+        select: { id: true },
+      });
+      if (resolvedChannel) {
+        targetGlobalChannelId = resolvedChannel.id;
+      }
+    }
+
     const cacheKey = isStudent
-      ? `youtube:videos:${centerId}:student:${userId}${channelId ? `:chan:${channelId}` : ''}:page:${page}:limit:${limit}`
-      : `youtube:videos:${centerId}:staff${channelId ? `:chan:${channelId}` : ''}:page:${page}:limit:${limit}`;
+      ? `youtube:videos:${centerId}:student:${userId}${targetGlobalChannelId ? `:chan:${targetGlobalChannelId}` : ''}:page:${page}:limit:${limit}`
+      : `youtube:videos:${centerId}:staff${targetGlobalChannelId ? `:chan:${targetGlobalChannelId}` : ''}:page:${page}:limit:${limit}`;
 
     const cached = await this.redis.get<any[]>(cacheKey);
     let videos: any[];
@@ -895,11 +916,11 @@ export class CentersService {
             },
           };
 
-      const queryWhere = channelId
+      const queryWhere = targetGlobalChannelId
         ? {
             playlist: {
               channel: {
-                id: channelId,
+                id: targetGlobalChannelId,
                 subscriptions: {
                   some: {
                     centerId,
@@ -1614,8 +1635,12 @@ export class CentersService {
           playlistId: uploadsPlaylistId,
           title: `${globalChannel.title} Uploads`,
           description: 'Latest uploads synced automatically',
+          thumbnail: globalChannel.thumbnail || '',
         },
-        update: { title: `${globalChannel.title} Uploads` },
+        update: { 
+          title: `${globalChannel.title} Uploads`,
+          thumbnail: globalChannel.thumbnail || '',
+        },
       });
 
       // Fetch all playlists and upsert new ones
@@ -2131,25 +2156,43 @@ export class CentersService {
   }
 
   async uploadMedia(centerId: string, file: any) {
-    // 1. Upload to Google Drive and get fileId
-    const fileId = await this.googleDrive.uploadFile(
-      file.buffer,
-      file.originalname,
-      file.mimetype
-    );
+    const provider = this.config.get('STORAGE_PROVIDER', 'local');
+    if (provider === 'local') {
+      const stored = await this.storageService.save(
+        {
+          originalname: file.originalname,
+          buffer: file.buffer,
+          size: file.size,
+        },
+        `centers/${centerId}`
+      );
+      const fileUrl = `${this.config.get('API_URL', 'http://localhost:3001')}${stored.url}`;
 
-    // 2. Generate the direct image viewing url
-    const fileUrl = `https://lh3.googleusercontent.com/d/${fileId}`;
+      return this.prisma.centerMedia.create({
+        data: {
+          centerId,
+          fileName: file.originalname,
+          fileId: stored.fileName,
+          fileUrl,
+        },
+      });
+    } else {
+      const fileId = await this.googleDrive.uploadFile(
+        file.buffer,
+        file.originalname,
+        file.mimetype
+      );
+      const fileUrl = `https://lh3.googleusercontent.com/d/${fileId}`;
 
-    // 3. Save to database
-    return this.prisma.centerMedia.create({
-      data: {
-        centerId,
-        fileName: file.originalname,
-        fileId,
-        fileUrl,
-      },
-    });
+      return this.prisma.centerMedia.create({
+        data: {
+          centerId,
+          fileName: file.originalname,
+          fileId,
+          fileUrl,
+        },
+      });
+    }
   }
 
   async listMedia(centerId: string) {

@@ -77,9 +77,11 @@ export default function ApplyCenterPage() {
             title="Application submitted with gratitude"
             message="The Super Admin will review your center. You will receive access once approved."
           />
-          <Link href="/dashboard" className="btn-primary mx-auto mt-8 block w-fit">
-            Return to dashboard
-          </Link>
+          <div className="text-center mt-8">
+            <Link href="/dashboard" className="btn-primary">
+              Return to dashboard
+            </Link>
+          </div>
         </PageShell>
       </div>
     );

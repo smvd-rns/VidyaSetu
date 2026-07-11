@@ -643,17 +643,20 @@ function YoutubeChannelsTab({ centerId, batchIds, isAdmin }: { centerId: string;
   const videoIdParam = searchParams.get('ytVideoId');
   const selectedVideo = videos.find((v) => v.youtubeId === videoIdParam || v.id === videoIdParam) || null;
 
-  // Load description on-demand when a video is selected
-  useEffect(() => {
-    if (!selectedVideo || selectedVideo.description !== undefined) return;
+  const [loadingDesc, setLoadingDesc] = useState(false);
+
+  const loadDescription = () => {
+    if (!selectedVideo || loadingDesc) return;
+    setLoadingDesc(true);
     api<Video>(`/centers/${centerId}/videos/${selectedVideo.id}`)
       .then((fullVideo) => {
         setVideos((prev) =>
           prev.map((v) => (v.id === fullVideo.id ? { ...v, description: fullVideo.description || '' } : v))
         );
       })
-      .catch((err) => console.error('Failed to load video description:', err));
-  }, [centerId, selectedVideo?.id]);
+      .catch((err) => console.error('Failed to load video description:', err))
+      .finally(() => setLoadingDesc(false));
+  };
 
   // Scroll to player whenever the selected video URL param changes (after navigation settles)
   const prevVideoIdRef = useRef<string | null>(null);
@@ -1074,13 +1077,31 @@ function YoutubeChannelsTab({ centerId, batchIds, isAdmin }: { centerId: string;
                 <button onClick={() => handleShareVideo(selectedVideo)} className="w-9 h-9 rounded-xl bg-white border border-slate-200 flex items-center justify-center text-slate-400 hover:text-indigo-600 text-base transition cursor-pointer" title="Share">🔗</button>
               </div>
             )}
-            {!isPlayingLive && selectedVideo?.description && (
+            {!isPlayingLive && selectedVideo && selectedVideo.description === undefined && (
+              <div className="bg-slate-50/80 rounded-xl p-3.5 border border-slate-100 text-center">
+                <button
+                  type="button"
+                  onClick={loadDescription}
+                  disabled={loadingDesc}
+                  className="text-xs font-bold text-indigo-600 hover:text-indigo-800 cursor-pointer disabled:opacity-50"
+                >
+                  {loadingDesc ? 'Loading description...' : '📄 Click to view video description'}
+                </button>
+              </div>
+            )}
+            {!isPlayingLive && selectedVideo && selectedVideo.description !== undefined && (
               <div className="bg-slate-50/80 rounded-xl p-3 border border-slate-100">
                 <p className="text-[10px] font-black text-slate-400 uppercase tracking-wider mb-1.5">Description</p>
                 <p className="text-xs text-slate-600 leading-relaxed">
-                  {descExpanded || selectedVideo.description.length <= 150 ? selectedVideo.description : `${selectedVideo.description.substring(0, 150)}...`}
+                  {selectedVideo.description === '' ? (
+                    <span className="italic text-slate-400">No description available for this video.</span>
+                  ) : descExpanded || selectedVideo.description.length <= 150 ? (
+                    selectedVideo.description
+                  ) : (
+                    `${selectedVideo.description.substring(0, 150)}...`
+                  )}
                 </p>
-                {selectedVideo.description.length > 150 && (
+                {selectedVideo.description && selectedVideo.description.length > 150 && (
                   <button onClick={() => setDescExpanded(!descExpanded)} className="text-[10px] font-black text-indigo-600 mt-1.5 cursor-pointer hover:text-indigo-800">{descExpanded ? 'Show Less' : 'Show More'}</button>
                 )}
               </div>
@@ -1227,9 +1248,13 @@ function YoutubeChannelsTab({ centerId, batchIds, isAdmin }: { centerId: string;
                     className="group bg-white/70 backdrop-blur-xl rounded-2xl border border-white/80 overflow-hidden hover:shadow-xl transition-all cursor-pointer"
                   >
                     <div className="relative aspect-video bg-black flex items-center justify-center">
-                      {sampleVid ? (
+                      {pl.thumbnail ? (
+                        <img src={pl.thumbnail} alt={pl.title} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300" />
+                      ) : sampleVid ? (
                         <img src={`https://i.ytimg.com/vi/${sampleVid.youtubeId}/mqdefault.jpg`} alt={pl.title} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300" />
-                      ) : <span className="text-3xl">📁</span>}
+                      ) : (
+                        <span className="text-3xl">📁</span>
+                      )}
                       
                       <button
                         onClick={(e) => handleToggleSavePlaylist(e, pl)}
