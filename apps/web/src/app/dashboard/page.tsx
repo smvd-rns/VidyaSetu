@@ -859,11 +859,11 @@ function YoutubeChannelsTab({ centerId, batchIds, isAdmin }: { centerId: string;
   };
 
   const handleShareVideo = (video: Video) => {
-    const shareUrl = `${window.location.origin}/dashboard?tab=youtube&channelId=${selectedChannel?.channelId}&ytVideoId=${video.youtubeId || video.id}`;
+    const shareUrl = `https://www.youtube.com/watch?v=${video.youtubeId || video.id}`;
     if (navigator.share) {
-      navigator.share({ title: video.title, text: `Watch "${video.title}" on VenuTube!`, url: shareUrl }).catch(() => {});
+      navigator.share({ title: video.title, text: `Watch "${video.title}" on YouTube!`, url: shareUrl }).catch(() => {});
     } else {
-      navigator.clipboard.writeText(shareUrl).then(() => alert('Link copied!'));
+      navigator.clipboard.writeText(shareUrl).then(() => alert('YouTube video link copied to clipboard!'));
     }
   };
 
