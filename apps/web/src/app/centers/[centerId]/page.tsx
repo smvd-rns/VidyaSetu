@@ -1348,7 +1348,7 @@ function CenterContent() {
             <div className="flex-1 min-w-0 w-full">
               {tabLoading ? (
                 <div className="flex flex-col items-center justify-center py-28 bg-white/40 backdrop-blur-md rounded-3xl border border-white/60 shadow-sm space-y-4 animate-in fade-in duration-300">
-                  <div className="w-10 h-10 border-4 border-indigo-200 border-t-indigo-650 rounded-full animate-spin"></div>
+                  <div className="w-10 h-10 border-4 border-indigo-200 border-t-indigo-600 rounded-full animate-spin"></div>
                   <p className="text-xs font-black text-indigo-950/50 uppercase tracking-widest">Loading Center Records...</p>
                 </div>
               ) : (
@@ -1697,7 +1697,7 @@ function CenterContent() {
                                                       handleAssignBatchMember(b.id, m.id);
                                                     }
                                                   }}
-                                                  className="w-4 h-4 rounded text-indigo-650 border-slate-350 focus:ring-indigo-500 cursor-pointer"
+                                                  className="w-4 h-4 rounded text-indigo-600 border-slate-350 focus:ring-indigo-500 cursor-pointer"
                                                 />
                                                 <span className="truncate flex items-center gap-1">
                                                   {b.name}
@@ -2189,7 +2189,7 @@ function CenterContent() {
                                     <div key={bm.id} className="bg-white border border-fuchsia-100/40 rounded-2xl p-3 shadow-[0_4px_15px_rgb(0,0,0,0.01)] hover:shadow transition-shadow">
                                       <div className="flex items-center gap-3 justify-between">
                                         <div className="flex items-center gap-2.5 min-w-0">
-                                          <div className="w-7 h-7 rounded-full bg-indigo-50 border border-indigo-100 flex items-center justify-center text-indigo-750 font-black text-xs shrink-0">
+                                          <div className="w-7 h-7 rounded-full bg-indigo-50 border border-indigo-100 flex items-center justify-center text-indigo-700 font-black text-xs shrink-0">
                                             {bm.membership.user.firstName[0]}
                                           </div>
                                           <div className="min-w-0">

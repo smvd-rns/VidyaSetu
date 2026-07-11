@@ -2016,7 +2016,7 @@ function ModalForm({
         disabled={!centerData || submitting}
         className={`w-full py-2.5 rounded-xl text-xs font-black uppercase tracking-wider transition-all duration-300 shadow-md cursor-pointer ${
           centerData && !submitting
-            ? 'bg-indigo-650 hover:bg-indigo-750 text-white hover:shadow-lg'
+            ? 'bg-indigo-600 hover:bg-indigo-700 text-white hover:shadow-lg'
             : 'bg-slate-100 text-slate-400 cursor-not-allowed border border-slate-200 shadow-none'
         }`}
       >
