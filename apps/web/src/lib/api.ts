@@ -17,7 +17,8 @@ export type ApiError = { message: string; statusCode: number };
 
 let accessToken: string | null = null;
 
-export function setAccessToken(token: string | null, refreshToken?: string | null) {
+// Only stores/clears the access token. NEVER touches the refresh token.
+export function setAccessToken(token: string | null) {
   accessToken = token;
   if (typeof window !== 'undefined') {
     if (token) {
@@ -25,12 +26,24 @@ export function setAccessToken(token: string | null, refreshToken?: string | nul
     } else {
       localStorage.removeItem('vs_access_token');
     }
+  }
+}
 
-    if (refreshToken) {
-      localStorage.setItem('vs_refresh_token', refreshToken);
-    } else if (refreshToken === null || token === null) {
-      localStorage.removeItem('vs_refresh_token');
-    }
+// Stores both tokens - only called on successful login/register/refresh
+export function setTokens(newAccessToken: string, newRefreshToken: string) {
+  accessToken = newAccessToken;
+  if (typeof window !== 'undefined') {
+    localStorage.setItem('vs_access_token', newAccessToken);
+    localStorage.setItem('vs_refresh_token', newRefreshToken);
+  }
+}
+
+// Clears all tokens - only called on explicit logout or real 401 (invalid refresh token)
+export function clearAllTokens() {
+  accessToken = null;
+  if (typeof window !== 'undefined') {
+    localStorage.removeItem('vs_access_token');
+    localStorage.removeItem('vs_refresh_token');
   }
 }
 
@@ -46,27 +59,42 @@ async function refreshAccessToken(): Promise<string | null> {
   const url = getApiUrl();
   const storedRefreshToken = typeof window !== 'undefined' ? localStorage.getItem('vs_refresh_token') : null;
 
+  if (!storedRefreshToken) return null;
+
   try {
     const res = await fetch(`${url}/api/v1/auth/refresh`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        ...(storedRefreshToken ? { 'x-refresh-token': storedRefreshToken } : {}),
+        'x-refresh-token': storedRefreshToken,
       },
       body: JSON.stringify({ refreshToken: storedRefreshToken }),
       credentials: 'include',
     });
 
+    if (res.status === 401) {
+      // Refresh token is genuinely invalid/expired — clear everything, user must login
+      clearAllTokens();
+      return null;
+    }
+
     if (!res.ok) {
-      setAccessToken(null);
+      // Server error (500), deploy restart, network blip — DON'T clear tokens,
+      // user's session is still valid, just temporarily unreachable
+      console.warn('Token refresh temporarily failed (server/network issue), keeping tokens:', res.status);
       return null;
     }
 
     const data = (await res.json()) as { accessToken: string; refreshToken?: string };
-    setAccessToken(data.accessToken, data.refreshToken || null);
+    if (data.refreshToken) {
+      setTokens(data.accessToken, data.refreshToken);
+    } else {
+      setAccessToken(data.accessToken);
+    }
     return data.accessToken;
   } catch (err) {
-    console.error('Failed to refresh access token:', err);
+    // Network error, server down — DON'T clear tokens, keep session alive
+    console.warn('Token refresh network error, keeping tokens:', err);
     return null;
   }
 }

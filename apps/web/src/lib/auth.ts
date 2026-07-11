@@ -1,4 +1,4 @@
-import { api, setAccessToken } from './api';
+import { api, setTokens, clearAllTokens } from './api';
 
 export interface AuthUser {
   id: string;
@@ -20,7 +20,7 @@ export async function login(email: string, password: string) {
     method: 'POST',
     body: JSON.stringify({ email, password }),
   });
-  setAccessToken(data.accessToken, data.refreshToken);
+  if (data.refreshToken) setTokens(data.accessToken, data.refreshToken);
   return data;
 }
 
@@ -36,7 +36,7 @@ export async function register(input: {
     method: 'POST',
     body: JSON.stringify(input),
   });
-  setAccessToken(data.accessToken, data.refreshToken);
+  if (data.refreshToken) setTokens(data.accessToken, data.refreshToken);
   return data;
 }
 
@@ -49,7 +49,7 @@ export async function logout() {
       ...(storedRefreshToken ? { 'x-refresh-token': storedRefreshToken } : {}),
     },
   });
-  setAccessToken(null);
+  clearAllTokens();
 }
 
 export async function getMe() {
