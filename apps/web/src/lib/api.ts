@@ -17,11 +17,20 @@ export type ApiError = { message: string; statusCode: number };
 
 let accessToken: string | null = null;
 
-export function setAccessToken(token: string | null) {
+export function setAccessToken(token: string | null, refreshToken?: string | null) {
   accessToken = token;
   if (typeof window !== 'undefined') {
-    if (token) localStorage.setItem('vs_access_token', token);
-    else localStorage.removeItem('vs_access_token');
+    if (token) {
+      localStorage.setItem('vs_access_token', token);
+    } else {
+      localStorage.removeItem('vs_access_token');
+    }
+
+    if (refreshToken) {
+      localStorage.setItem('vs_refresh_token', refreshToken);
+    } else if (refreshToken === null || token === null) {
+      localStorage.removeItem('vs_refresh_token');
+    }
   }
 }
 
@@ -35,14 +44,31 @@ export function getAccessToken(): string | null {
 
 async function refreshAccessToken(): Promise<string | null> {
   const url = getApiUrl();
-  const res = await fetch(`${url}/api/v1/auth/refresh`, {
-    method: 'POST',
-    credentials: 'include',
-  });
-  if (!res.ok) return null;
-  const data = (await res.json()) as { accessToken: string };
-  setAccessToken(data.accessToken);
-  return data.accessToken;
+  const storedRefreshToken = typeof window !== 'undefined' ? localStorage.getItem('vs_refresh_token') : null;
+
+  try {
+    const res = await fetch(`${url}/api/v1/auth/refresh`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(storedRefreshToken ? { 'x-refresh-token': storedRefreshToken } : {}),
+      },
+      body: JSON.stringify({ refreshToken: storedRefreshToken }),
+      credentials: 'include',
+    });
+
+    if (!res.ok) {
+      setAccessToken(null);
+      return null;
+    }
+
+    const data = (await res.json()) as { accessToken: string; refreshToken?: string };
+    setAccessToken(data.accessToken, data.refreshToken || null);
+    return data.accessToken;
+  } catch (err) {
+    console.error('Failed to refresh access token:', err);
+    return null;
+  }
 }
 
 export async function api<T>(

@@ -8,6 +8,7 @@ import {
   Req,
   HttpCode,
   HttpStatus,
+  Headers,
 } from '@nestjs/common';
 import { Response, Request } from 'express';
 import { AuthService } from './auth.service';
@@ -34,7 +35,7 @@ export class AuthController {
   async register(@Body() dto: RegisterDto, @Res({ passthrough: true }) res: Response) {
     const result = await this.authService.register(dto);
     this.setRefreshCookie(res, result.refreshToken);
-    return { user: result.user, accessToken: result.accessToken, expiresIn: result.expiresIn };
+    return { user: result.user, accessToken: result.accessToken, refreshToken: result.refreshToken, expiresIn: result.expiresIn };
   }
 
   @Public()
@@ -43,25 +44,37 @@ export class AuthController {
   async login(@Body() dto: LoginDto, @Res({ passthrough: true }) res: Response) {
     const result = await this.authService.login(dto);
     this.setRefreshCookie(res, result.refreshToken);
-    return { user: result.user, accessToken: result.accessToken, expiresIn: result.expiresIn };
+    return { user: result.user, accessToken: result.accessToken, refreshToken: result.refreshToken, expiresIn: result.expiresIn };
   }
 
   @Public()
   @Post('refresh')
   @HttpCode(HttpStatus.OK)
-  async refresh(@Req() req: Request, @Res({ passthrough: true }) res: Response) {
-    const token = req.cookies?.[REFRESH_COOKIE] as string | undefined;
+  async refresh(
+    @Req() req: Request,
+    @Body('refreshToken') bodyToken: string | undefined,
+    @Headers('x-refresh-token') headerToken: string | undefined,
+    @Res({ passthrough: true }) res: Response
+  ) {
+    const cookieToken = req.cookies?.[REFRESH_COOKIE] as string | undefined;
+    const token = bodyToken || headerToken || cookieToken;
     const result = await this.authService.refresh(token ?? '');
     this.setRefreshCookie(res, result.refreshToken);
-    return { user: result.user, accessToken: result.accessToken, expiresIn: result.expiresIn };
+    return { user: result.user, accessToken: result.accessToken, refreshToken: result.refreshToken, expiresIn: result.expiresIn };
   }
 
   @Post('logout')
   @HttpCode(HttpStatus.OK)
-  async logout(@Req() req: Request, @Res({ passthrough: true }) res: Response) {
-    const token = req.cookies?.[REFRESH_COOKIE] as string | undefined;
+  async logout(
+    @Req() req: Request,
+    @Body('refreshToken') bodyToken: string | undefined,
+    @Headers('x-refresh-token') headerToken: string | undefined,
+    @Res({ passthrough: true }) res: Response
+  ) {
+    const cookieToken = req.cookies?.[REFRESH_COOKIE] as string | undefined;
+    const token = bodyToken || headerToken || cookieToken;
     await this.authService.logout(token);
-    res.clearCookie(REFRESH_COOKIE);
+    res.clearCookie(REFRESH_COOKIE, { path: '/api/v1/auth' });
     return { success: true };
   }
 

@@ -11,6 +11,7 @@ export interface AuthUser {
 export interface LoginResponse {
   user: AuthUser;
   accessToken: string;
+  refreshToken?: string;
   expiresIn: string;
 }
 
@@ -19,7 +20,7 @@ export async function login(email: string, password: string) {
     method: 'POST',
     body: JSON.stringify({ email, password }),
   });
-  setAccessToken(data.accessToken);
+  setAccessToken(data.accessToken, data.refreshToken);
   return data;
 }
 
@@ -35,12 +36,19 @@ export async function register(input: {
     method: 'POST',
     body: JSON.stringify(input),
   });
-  setAccessToken(data.accessToken);
+  setAccessToken(data.accessToken, data.refreshToken);
   return data;
 }
 
 export async function logout() {
-  await api('/auth/logout', { method: 'POST' });
+  const storedRefreshToken = typeof window !== 'undefined' ? localStorage.getItem('vs_refresh_token') : null;
+  await api('/auth/logout', {
+    method: 'POST',
+    body: JSON.stringify({ refreshToken: storedRefreshToken }),
+    headers: {
+      ...(storedRefreshToken ? { 'x-refresh-token': storedRefreshToken } : {}),
+    },
+  });
   setAccessToken(null);
 }
 
