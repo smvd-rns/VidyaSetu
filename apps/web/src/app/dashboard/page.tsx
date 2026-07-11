@@ -688,6 +688,21 @@ function YoutubeChannelsTab({ centerId, batchIds, isAdmin }: { centerId: string;
     }
     const newUrl = `${window.location.pathname}?${params.toString()}`;
     window.history.replaceState({ ...window.history.state, as: newUrl, url: newUrl }, '', newUrl);
+
+    // Scroll UP to player only if the player anchor is ABOVE the current scroll position
+    // (i.e. user needs to scroll up to see it). Never scrolls DOWN.
+    if (videoId) {
+      setTimeout(() => {
+        const anchor = document.getElementById('video-player-anchor');
+        if (anchor) {
+          const rect = anchor.getBoundingClientRect();
+          // Only scroll if the anchor is above the top of the viewport (out of view upward)
+          if (rect.top < 0) {
+            anchor.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          }
+        }
+      }, 50);
+    }
   };
 
   useEffect(() => { setDescExpanded(false); }, [selectedVideo?.id]);
