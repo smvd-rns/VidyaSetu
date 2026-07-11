@@ -4,7 +4,7 @@ import { useEffect, useRef, useState, Suspense, FormEvent } from 'react';
 import { useRouter, useParams, useSearchParams, usePathname } from 'next/navigation';
 import Link from 'next/link';
 import { getMe } from '@/lib/auth';
-import { api } from '@/lib/api';
+import { api, API_URL } from '@/lib/api';
 import { Navbar } from '@/components/Navbar';
 import { Card, PageShell, FormField } from '@/components/ui';
 
@@ -26,6 +26,17 @@ interface CenterDetails {
   joinCode?: string;
   _count: { memberships: number; courses: number; batches: number };
 }
+
+const resolveMediaUrl = (url: string) => {
+  if (!url) return '';
+  if (url.startsWith('/')) {
+    return `${API_URL}${url}`;
+  }
+  if (url.includes('localhost:3001') && typeof window !== 'undefined') {
+    return url.replace(/https?:\/\/localhost:3001/, API_URL);
+  }
+  return url;
+};
 
 export default function CenterPage() {
   return (
@@ -1115,7 +1126,7 @@ function CenterContent() {
                         }`}
                       >
                         <img
-                          src={item.fileUrl}
+                          src={resolveMediaUrl(item.fileUrl)}
                           alt={item.fileName}
                           className="w-full h-full object-cover"
                         />
@@ -2859,7 +2870,7 @@ function CenterContent() {
                             <div className="flex gap-3 items-start">
                               {c.thumbnail ? (
                                 <img
-                                  src={c.thumbnail}
+                                  src={resolveMediaUrl(c.thumbnail)}
                                   alt={c.title}
                                   className="h-12 w-12 rounded-full object-cover border border-slate-200 shrink-0"
                                   onError={(e) => {
@@ -3191,7 +3202,7 @@ function CenterContent() {
                           </div>
                           {ytChanThumb && (
                             <div className="relative w-16 h-16 rounded-xl border border-red-100 overflow-hidden mt-2 bg-slate-50 shadow-sm">
-                              <img src={ytChanThumb} alt="Preview" className="w-full h-full object-cover" />
+                              <img src={resolveMediaUrl(ytChanThumb)} alt="Preview" className="w-full h-full object-cover" />
                             </div>
                           )}
                         </div>

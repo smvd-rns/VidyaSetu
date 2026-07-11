@@ -2166,7 +2166,7 @@ export class CentersService {
         },
         `centers/${centerId}`
       );
-      const fileUrl = `${this.config.get('API_URL', 'http://localhost:3001')}${stored.url}`;
+      const fileUrl = stored.url;
 
       return this.prisma.centerMedia.create({
         data: {

@@ -4,7 +4,7 @@ import { useEffect, useState, useCallback, useRef, FormEvent, Suspense } from 'r
 import { useRouter, useSearchParams, usePathname } from 'next/navigation';
 import Link from 'next/link';
 import { getMe, logout } from '@/lib/auth';
-import { api } from '@/lib/api';
+import { api, API_URL } from '@/lib/api';
 import { Navbar } from '@/components/Navbar';
 import { Card } from '@/components/ui';
 
@@ -28,6 +28,18 @@ interface User {
   globalRole: string;
   centerMemberships: CenterMembership[];
 }
+
+const resolveMediaUrl = (url: string) => {
+  if (!url) return '';
+  if (url.startsWith('/')) {
+    return `${API_URL}${url}`;
+  }
+  if (url.includes('localhost:3001') && typeof window !== 'undefined') {
+    return url.replace(/https?:\/\/localhost:3001/, API_URL);
+  }
+  return url;
+};
+
 interface Video {
   id: string;
   title: string;
@@ -1249,7 +1261,7 @@ function YoutubeChannelsTab({ centerId, batchIds, isAdmin }: { centerId: string;
                   >
                     <div className="relative aspect-video bg-black flex items-center justify-center">
                       {pl.thumbnail ? (
-                        <img src={pl.thumbnail} alt={pl.title} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300" />
+                        <img src={resolveMediaUrl(pl.thumbnail)} alt={pl.title} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300" />
                       ) : sampleVid ? (
                         <img src={`https://i.ytimg.com/vi/${sampleVid.youtubeId}/mqdefault.jpg`} alt={pl.title} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300" />
                       ) : (
