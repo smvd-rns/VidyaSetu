@@ -173,9 +173,11 @@ function SuperAdminContent() {
       setCenters(ctrs);
       setUsers(usrList);
       setYoutubeChannels(ytList);
-    } catch (err) {
+    } catch (err: any) {
       console.error(err);
-      router.replace('/login');
+      if (err && err.statusCode === 401) {
+        router.replace('/login');
+      }
     } finally {
       setLoading(false);
     }

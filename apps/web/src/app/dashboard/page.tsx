@@ -652,8 +652,14 @@ function YoutubeChannelsTab({ centerId, batchIds, isAdmin }: { centerId: string;
     router.push(`${pathname}?${params.toString()}`, { scroll: false });
   };
 
-  const videoIdParam = searchParams.get('ytVideoId');
-  const selectedVideo = videos.find((v) => v.youtubeId === videoIdParam || v.id === videoIdParam) || null;
+  const [activeVideoId, setActiveVideoId] = useState<string | null>(null);
+
+  useEffect(() => {
+    const param = searchParams.get('ytVideoId');
+    setActiveVideoId(param);
+  }, [searchParams]);
+
+  const selectedVideo = videos.find((v) => v.youtubeId === activeVideoId || v.id === activeVideoId) || null;
 
   const [loadingDesc, setLoadingDesc] = useState(false);
 
@@ -670,35 +676,18 @@ function YoutubeChannelsTab({ centerId, batchIds, isAdmin }: { centerId: string;
       .finally(() => setLoadingDesc(false));
   };
 
-  // Scroll to player whenever the selected video URL param changes (after navigation settles)
-  const prevVideoIdRef = useRef<string | null>(null);
-  const userClickedVideoRef = useRef<boolean>(false);
-
-  useEffect(() => {
-    const currentVideoId = searchParams.get('ytVideoId');
-    if (currentVideoId && currentVideoId !== prevVideoIdRef.current) {
-      prevVideoIdRef.current = currentVideoId;
-      if (userClickedVideoRef.current) {
-        userClickedVideoRef.current = false; // Reset flag
-        setTimeout(() => {
-          const el = document.getElementById('video-player-anchor');
-          if (el) {
-            el.scrollIntoView({ behavior: 'smooth', block: 'start' });
-          }
-        }, 200);
-      }
-    }
-  }, [searchParams]);
-
   const setSelectedVideo = (video: Video | null) => {
-    const params = new URLSearchParams(searchParams.toString());
-    if (video) {
-      params.set('ytVideoId', video.youtubeId || video.id);
-      userClickedVideoRef.current = true;
+    const videoId = video ? (video.youtubeId || video.id) : null;
+    setActiveVideoId(videoId);
+
+    const params = new URLSearchParams(window.location.search);
+    if (videoId) {
+      params.set('ytVideoId', videoId);
     } else {
       params.delete('ytVideoId');
     }
-    router.push(`${pathnameRef.current}?${params.toString()}`, { scroll: false });
+    const newUrl = `${window.location.pathname}?${params.toString()}`;
+    window.history.replaceState({ ...window.history.state, as: newUrl, url: newUrl }, '', newUrl);
   };
 
   useEffect(() => { setDescExpanded(false); }, [selectedVideo?.id]);
@@ -750,11 +739,14 @@ function YoutubeChannelsTab({ centerId, batchIds, isAdmin }: { centerId: string;
       : '';
 
     const autoSelectFirst = (list: Video[]) => {
-      // Read searchParams via ref so this doesn't trigger another render-cycle
-      if (!searchParamsRef.current.get('ytVideoId') && list.length > 0) {
-        const p = new URLSearchParams(searchParamsRef.current.toString());
-        p.set('ytVideoId', list[0].youtubeId || list[0].id);
-        routerRef.current.replace(`${pathnameRef.current}?${p.toString()}`, { scroll: false });
+      const currentParam = searchParamsRef.current.get('ytVideoId');
+      if (!currentParam && list.length > 0) {
+        const firstId = list[0].youtubeId || list[0].id;
+        setActiveVideoId(firstId);
+        const p = new URLSearchParams(window.location.search);
+        p.set('ytVideoId', firstId);
+        const newUrl = `${window.location.pathname}?${p.toString()}`;
+        window.history.replaceState({ ...window.history.state, as: newUrl, url: newUrl }, '', newUrl);
       }
     };
 
@@ -1622,8 +1614,12 @@ function DashboardContent() {
       setUser(data);
       const firstApproved = data.centerMemberships.find((m) => m.isApproved);
       if (firstApproved) setSelectedCenterId(firstApproved.center.id);
-    } catch {
-      router.replace('/login');
+    } catch (err: any) {
+      if (err && err.statusCode === 401) {
+        router.replace('/login');
+      } else {
+        console.error('Failed to load user profile (network or server restart):', err);
+      }
     } finally {
       setLoading(false);
     }
