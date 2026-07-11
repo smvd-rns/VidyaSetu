@@ -672,16 +672,21 @@ function YoutubeChannelsTab({ centerId, batchIds, isAdmin }: { centerId: string;
 
   // Scroll to player whenever the selected video URL param changes (after navigation settles)
   const prevVideoIdRef = useRef<string | null>(null);
+  const userClickedVideoRef = useRef<boolean>(false);
+
   useEffect(() => {
     const currentVideoId = searchParams.get('ytVideoId');
     if (currentVideoId && currentVideoId !== prevVideoIdRef.current) {
       prevVideoIdRef.current = currentVideoId;
-      setTimeout(() => {
-        const el = document.getElementById('video-player-anchor');
-        if (el) {
-          el.scrollIntoView({ behavior: 'smooth', block: 'start' });
-        }
-      }, 200);
+      if (userClickedVideoRef.current) {
+        userClickedVideoRef.current = false; // Reset flag
+        setTimeout(() => {
+          const el = document.getElementById('video-player-anchor');
+          if (el) {
+            el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          }
+        }, 200);
+      }
     }
   }, [searchParams]);
 
@@ -689,6 +694,7 @@ function YoutubeChannelsTab({ centerId, batchIds, isAdmin }: { centerId: string;
     const params = new URLSearchParams(searchParams.toString());
     if (video) {
       params.set('ytVideoId', video.youtubeId || video.id);
+      userClickedVideoRef.current = true;
     } else {
       params.delete('ytVideoId');
     }

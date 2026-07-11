@@ -9,9 +9,9 @@ interface LogoProps {
 
 export function Logo({ size = 'md', showTagline = false, hideIcon = false, className = '' }: LogoProps) {
   const sizes = {
-    sm: { icon: 'h-8 w-8 text-lg', title: 'text-2xl', tag: 'text-xs', flute: 'w-20 h-3' },
-    md: { icon: 'h-10 w-10 text-xl', title: 'text-4xl', tag: 'text-sm', flute: 'w-32 h-5' },
-    lg: { icon: 'h-14 w-14 text-3xl', title: 'text-6xl', tag: 'text-base', flute: 'w-48 h-6' },
+    sm: { icon: 'h-8 w-8 text-lg', title: 'text-2xl', tag: 'text-xs', flute: 'w-28 h-4' },
+    md: { icon: 'h-10 w-10 text-xl', title: 'text-4xl', tag: 'text-sm', flute: 'w-44 h-6' },
+    lg: { icon: 'h-14 w-14 text-3xl', title: 'text-6xl', tag: 'text-base', flute: 'w-64 h-8' },
   };
   const s = sizes[size];
 
@@ -44,7 +44,7 @@ export function Logo({ size = 'md', showTagline = false, hideIcon = false, class
           <span className="text-red-600 font-bold">Tube</span>
         </span>
         {/* Stylistic Flute ornament below the text */}
-        <svg className={`${s.flute} mt-1.5 text-amber-500`} viewBox="0 0 100 24" fill="currentColor">
+        <svg className={`${s.flute} -mt-0.5 text-amber-500`} viewBox="0 0 100 24" fill="currentColor">
           {/* Main flute body */}
           <rect x="5" y="10" width="80" height="4" rx="2" />
           {/* Flute holes */}
