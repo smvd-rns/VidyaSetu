@@ -131,6 +131,11 @@ function SuperAdminContent() {
   const [selectedYtCenterId, setSelectedYtCenterId] = useState('');
   const [selectedYtBatchId, setSelectedYtBatchId] = useState('');
 
+  // YouTube Selection & Sequential Sync States
+  const [selectedChannelIds, setSelectedChannelIds] = useState<string[]>([]);
+  const [isSyncingQueue, setIsSyncingQueue] = useState(false);
+  const [syncProgressText, setSyncProgressText] = useState('');
+
   const selectedCenterId = searchParams.get('selectedCenterId') || '';
   const setSelectedCenterId = (centerId: string | null) => {
     const params = new URLSearchParams(searchParams.toString());
@@ -153,6 +158,9 @@ function SuperAdminContent() {
     setSelectedUserRole('');
     setSelectedYtCenterId('');
     setSelectedYtBatchId('');
+    setSelectedChannelIds([]);
+    setIsSyncingQueue(false);
+    setSyncProgressText('');
     router.push(`${pathname}?${params.toString()}`);
   };
 
@@ -264,6 +272,53 @@ function SuperAdminContent() {
     }
   }
 
+  async function handleSyncSelected() {
+    if (selectedChannelIds.length === 0) return;
+    setIsSyncingQueue(true);
+    
+    try {
+      const channelsToSync = youtubeChannels.filter((ch) =>
+        selectedChannelIds.includes(ch.id)
+      );
+
+      for (let i = 0; i < channelsToSync.length; i++) {
+        const ch = channelsToSync[i];
+        setSyncProgressText(`[${i + 1}/${channelsToSync.length}] Initiating sync for "${ch.title}"...`);
+        
+        try {
+          await api(`/centers/${ch.center.id}/youtube/channels/${ch.channelId}/sync`, {
+            method: 'POST',
+          });
+
+          let isRunning = true;
+          while (isRunning) {
+            await new Promise((resolve) => setTimeout(resolve, 2000));
+            const progress = await api<any>(`/centers/${ch.center.id}/youtube/channels/${ch.channelId}/sync-status`);
+            
+            if (progress.status === 'syncing') {
+              const stageText = progress.stage ? ` (${progress.stage})` : '';
+              setSyncProgressText(
+                `[${i + 1}/${channelsToSync.length}] Syncing "${ch.title}"${stageText}...`
+              );
+            } else {
+              isRunning = false;
+            }
+          }
+        } catch (err: any) {
+          console.error(`Failed to sync channel ${ch.title}:`, err);
+        }
+      }
+      setSyncProgressText('All selected channels synchronized successfully!');
+      setTimeout(() => setSyncProgressText(''), 5000);
+      setSelectedChannelIds([]);
+      await loadData();
+    } catch (error) {
+      console.error('Error during batch sync execution:', error);
+    } finally {
+      setIsSyncingQueue(false);
+    }
+  }
+
   async function handleLogout() {
     await logout();
     router.push('/login');
@@ -321,6 +376,18 @@ function SuperAdminContent() {
     id,
     name: allYtBatchMap.get(id) || 'Unknown Group'
   }));
+
+  const filteredChannels = youtubeChannels.filter(ch => {
+    const matchesSearch = ch.title.toLowerCase().includes(searchQuery.toLowerCase()) || 
+      ch.channelId.toLowerCase().includes(searchQuery.toLowerCase());
+
+    const matchesCenter = !selectedYtCenterId || ch.center.id === selectedYtCenterId;
+
+    const matchesBatch = !selectedYtBatchId || 
+      ch.batches.some(b => b.batch.id === selectedYtBatchId);
+
+    return matchesSearch && matchesCenter && matchesBatch;
+  });
 
   return (
     <div className="flex flex-1 flex-col bg-gradient-to-br from-indigo-100 via-purple-100 to-fuchsia-100 min-h-screen">
@@ -472,42 +539,92 @@ function SuperAdminContent() {
 
         {/* Search Bar & Filters for YouTube Tab */}
         {tab === 'youtube' && (
-          <div className="mb-6 bg-white/40 backdrop-blur-md p-4 rounded-2xl border border-white/60 shadow-sm flex flex-wrap gap-3 items-center">
-            {/* Search */}
-            <input
-              type="text"
-              placeholder="Search channels by title or ID..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="bg-white border border-indigo-100 rounded-xl text-sm py-2.5 px-4 flex-1 min-w-[200px] text-indigo-950 font-semibold focus:outline-none focus:ring-2 focus:ring-indigo-400 shadow-sm"
-            />
+          <div className="space-y-4 mb-6">
+            <div className="bg-white/40 backdrop-blur-md p-4 rounded-2xl border border-white/60 shadow-sm flex flex-wrap gap-3 items-center">
+              {/* Search */}
+              <input
+                type="text"
+                placeholder="Search channels by title or ID..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="bg-white border border-indigo-100 rounded-xl text-sm py-2.5 px-4 flex-1 min-w-[200px] text-indigo-950 font-semibold focus:outline-none focus:ring-2 focus:ring-indigo-400 shadow-sm"
+              />
 
-            {/* Center Filter */}
-            <select
-              value={selectedYtCenterId}
-              onChange={(e) => {
-                setSelectedYtCenterId(e.target.value);
-                setSelectedYtBatchId(''); // Reset batch selection when center changes
-              }}
-              className="bg-white border border-indigo-100 rounded-xl text-sm py-2.5 px-3 text-indigo-950 font-bold focus:outline-none focus:ring-2 focus:ring-indigo-400 cursor-pointer shadow-sm"
-            >
-              <option value="">All Centers</option>
-              {centers.map(c => (
-                <option key={c.id} value={c.id}>{c.name}</option>
-              ))}
-            </select>
+              {/* Center Filter */}
+              <select
+                value={selectedYtCenterId}
+                onChange={(e) => {
+                  setSelectedYtCenterId(e.target.value);
+                  setSelectedYtBatchId(''); // Reset batch selection when center changes
+                }}
+                className="bg-white border border-indigo-100 rounded-xl text-sm py-2.5 px-3 text-indigo-950 font-bold focus:outline-none focus:ring-2 focus:ring-indigo-400 cursor-pointer shadow-sm"
+              >
+                <option value="">All Centers</option>
+                {centers.map(c => (
+                  <option key={c.id} value={c.id}>{c.name}</option>
+                ))}
+              </select>
 
-            {/* Group Filter */}
-            <select
-              value={selectedYtBatchId}
-              onChange={(e) => setSelectedYtBatchId(e.target.value)}
-              className="bg-white border border-indigo-100 rounded-xl text-sm py-2.5 px-3 text-indigo-950 font-bold focus:outline-none focus:ring-2 focus:ring-indigo-400 cursor-pointer shadow-sm"
-            >
-              <option value="">All Groups (Batches)</option>
-              {availableYtBatches.map(b => (
-                <option key={b.id} value={b.id}>{b.name}</option>
-              ))}
-            </select>
+              {/* Group Filter */}
+              <select
+                value={selectedYtBatchId}
+                onChange={(e) => setSelectedYtBatchId(e.target.value)}
+                className="bg-white border border-indigo-100 rounded-xl text-sm py-2.5 px-3 text-indigo-950 font-bold focus:outline-none focus:ring-2 focus:ring-indigo-400 cursor-pointer shadow-sm"
+              >
+                <option value="">All Groups (Batches)</option>
+                {availableYtBatches.map(b => (
+                  <option key={b.id} value={b.id}>{b.name}</option>
+                ))}
+              </select>
+            </div>
+
+            {/* Action Bar for manual bulk sync */}
+            <div className="bg-white/50 backdrop-blur-md px-4 py-3 rounded-2xl border border-white/60 shadow-sm flex flex-col sm:flex-row justify-between items-center gap-3">
+              <div className="flex items-center gap-3 w-full sm:w-auto">
+                <input
+                  type="checkbox"
+                  id="select-all-channels"
+                  checked={filteredChannels.length > 0 && filteredChannels.every(ch => selectedChannelIds.includes(ch.id))}
+                  disabled={isSyncingQueue}
+                  onChange={(e) => {
+                    if (e.target.checked) {
+                      const allVisibleIds = filteredChannels.map(ch => ch.id);
+                      setSelectedChannelIds(allVisibleIds);
+                    } else {
+                      setSelectedChannelIds([]);
+                    }
+                  }}
+                  className="h-4 w-4 rounded border-indigo-100 text-indigo-600 focus:ring-indigo-400 cursor-pointer disabled:opacity-50"
+                />
+                <label htmlFor="select-all-channels" className="text-xs font-black text-indigo-955 select-none cursor-pointer uppercase tracking-wider">
+                  Select All Visible ({filteredChannels.length})
+                </label>
+              </div>
+
+              <div className="flex items-center gap-3 w-full sm:w-auto justify-end">
+                {selectedChannelIds.length > 0 && (
+                  <span className="text-xs font-extrabold text-indigo-900/60">
+                    {selectedChannelIds.length} channel(s) selected
+                  </span>
+                )}
+                <button
+                  type="button"
+                  disabled={isSyncingQueue || selectedChannelIds.length === 0}
+                  onClick={handleSyncSelected}
+                  className="bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-700 hover:to-indigo-700 disabled:from-slate-400 disabled:to-slate-500 text-white text-xs font-black px-4 py-2.5 rounded-xl transition shadow-md hover:shadow-lg disabled:shadow-none cursor-pointer active:scale-95 disabled:scale-100"
+                >
+                  {isSyncingQueue ? 'Syncing...' : '📡 Sync Selected'}
+                </button>
+              </div>
+            </div>
+
+            {/* Sync Progress Alert */}
+            {syncProgressText && (
+              <div className="bg-indigo-50 border border-indigo-100 rounded-2xl p-4 shadow-sm flex items-center gap-3">
+                <div className="w-5 h-5 border-2 border-indigo-200 border-t-indigo-600 rounded-full animate-spin shrink-0" />
+                <span className="text-xs font-extrabold text-indigo-900 leading-snug">{syncProgressText}</span>
+              </div>
+            )}
           </div>
         )}
 
@@ -832,23 +949,29 @@ function SuperAdminContent() {
         {/* Tab: YouTube API */}
         {tab === 'youtube' && (
           <div className="space-y-4">
-            {youtubeChannels
-              .filter(ch => {
-                const matchesSearch = ch.title.toLowerCase().includes(searchQuery.toLowerCase()) || 
-                  ch.channelId.toLowerCase().includes(searchQuery.toLowerCase());
-
-                // Center filter
-                const matchesCenter = !selectedYtCenterId || ch.center.id === selectedYtCenterId;
-
-                // Batch filter
-                const matchesBatch = !selectedYtBatchId || 
-                  ch.batches.some(b => b.batch.id === selectedYtBatchId);
-
-                return matchesSearch && matchesCenter && matchesBatch;
-              })
-              .map((ch) => (
+            {filteredChannels.length === 0 ? (
+              <div className="text-center py-12 bg-white/50 backdrop-blur-md rounded-2xl border border-white/60 shadow-sm flex flex-col items-center justify-center">
+                <span className="text-4xl mb-3">📡</span>
+                <h3 className="font-black text-indigo-955 text-sm">No channels found</h3>
+                <p className="text-[10px] text-indigo-900/60 mt-1 max-w-xs font-semibold">Try adjusting your filters or search query.</p>
+              </div>
+            ) : (
+              filteredChannels.map((ch) => (
                 <div key={ch.id} className="bg-white/80 backdrop-blur-xl border border-white rounded-2xl p-4 shadow-sm hover:shadow transition flex flex-col sm:flex-row gap-4 justify-between items-start sm:items-center">
-                  <div className="flex items-center gap-3.5 min-w-0">
+                  <div className="flex items-center gap-3.5 min-w-0 flex-1">
+                    <input
+                      type="checkbox"
+                      checked={selectedChannelIds.includes(ch.id)}
+                      disabled={isSyncingQueue}
+                      onChange={(e) => {
+                        if (e.target.checked) {
+                          setSelectedChannelIds(prev => [...prev, ch.id]);
+                        } else {
+                          setSelectedChannelIds(prev => prev.filter(id => id !== ch.id));
+                        }
+                      }}
+                      className="h-4 w-4 rounded border-indigo-100 text-indigo-600 focus:ring-indigo-400 cursor-pointer disabled:opacity-50 shrink-0 mr-2"
+                    />
                     {ch.thumbnail ? (
                       <img src={ch.thumbnail} alt="" className="h-12 w-12 rounded-full object-cover border-2 border-white shadow-sm shrink-0" />
                     ) : (
@@ -868,10 +991,10 @@ function SuperAdminContent() {
                       </div>
                     </div>
                   </div>
-
+ 
                   <div className="w-full sm:w-auto border-t sm:border-t-0 sm:border-l border-indigo-900/5 pt-3 sm:pt-0 sm:pl-4 shrink-0 flex flex-col gap-1.5 text-left sm:text-right text-xs">
                     <p className="text-xs font-black text-indigo-900/50 uppercase tracking-wider">Sync State</p>
-                    <p className="font-extrabold text-indigo-950 mt-0.5">
+                    <p className="font-extrabold text-indigo-955 mt-0.5">
                       {ch.isActive ? '🟢 Active Auto-Sync' : '🔴 Idle'}
                     </p>
                     <p className="text-xs text-indigo-900/60 font-bold">
@@ -879,7 +1002,8 @@ function SuperAdminContent() {
                     </p>
                   </div>
                 </div>
-              ))}
+              ))
+            )}
           </div>
         )}
       </PageShell>
