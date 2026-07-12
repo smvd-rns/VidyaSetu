@@ -1535,8 +1535,8 @@ export class CentersService {
     return { cancelled: true };
   }
 
-  // ─── Scheduled Task (Runs twice daily) ──────────────────────────────────────
-  @Cron(CronExpression.EVERY_12_HOURS)
+  // ─── Scheduled Task (Runs twice daily at 5 AM and 4 PM IST) ─────────────────
+  @Cron('0 0 5,16 * * *', { timeZone: 'Asia/Kolkata' })
   async handleScheduledSync() {
     console.log('Starting scheduled YouTube channel sync...');
     try {
@@ -1549,8 +1549,37 @@ export class CentersService {
       console.log(`Found ${activeGlobalChannels.length} unique global channels to sync.`);
       for (const channel of activeGlobalChannels) {
         try {
-          await this.syncYoutubeChannelVideos(channel.channelId, false);
-          console.log(`Scheduled sync triggered for global channel ${channel.channelId}`);
+          const key = `global:${channel.channelId}`;
+          const current = this.syncProgress.get(key);
+          if (current && current.status === 'syncing') {
+            console.log(`Sync already in progress for channel ${channel.channelId}, skipping scheduled sync.`);
+            continue;
+          }
+
+          const globalChannel = await this.prisma.globalYoutubeChannel.findUnique({
+            where: { channelId: channel.channelId },
+            select: { id: true, lastSyncedAt: true },
+          });
+
+          const sinceDate = globalChannel?.lastSyncedAt || null;
+          const syncMode = sinceDate ? 'INCREMENTAL' : 'FULL_SCAN';
+
+          this.syncProgress.set(key, {
+            channelId: channel.channelId,
+            status: 'syncing',
+            playlistsTotal: 0,
+            playlistsProcessed: 0,
+            videosTotal: 0,
+            videosProcessed: 0,
+            stage: 'initiating',
+            syncMode,
+            sinceDate,
+            engine: process.env.REDIS_URL ? 'REDIS' : 'LOCAL',
+          });
+
+          console.log(`Scheduled sync starting for global channel ${channel.channelId}...`);
+          await this.runSyncInBackground(channel.channelId, sinceDate);
+          console.log(`Scheduled sync finished for global channel ${channel.channelId}`);
         } catch (err) {
           console.error(`Failed scheduled sync for channel ${channel.channelId}:`, err);
         }
@@ -1600,13 +1629,42 @@ export class CentersService {
     return { started: true, syncMode };
   }
 
+  private async fetchFromYoutube(endpointPath: string, queryParams: Record<string, string>): Promise<any> {
+    const keysStr = process.env.YOUTUBE_API_KEY || '';
+    const apiKeys = keysStr.split(',').map(k => k.trim()).filter(Boolean);
+    if (apiKeys.length === 0) {
+      throw new Error('No YouTube API key configured.');
+    }
+
+    let lastError: any = null;
+    for (const key of apiKeys) {
+      try {
+        const urlParams = new URLSearchParams({ ...queryParams, key });
+        const url = `https://www.googleapis.com/${endpointPath}?${urlParams.toString()}`;
+        const res = await fetch(url);
+        const data = await res.json() as any;
+
+        if (res.status === 403 && data.error?.errors?.some((e: any) => e.reason === 'quotaExceeded')) {
+          console.warn(`YouTube API key starting with ${key.substring(0, 8)}... has hit quota limits. Trying next key...`);
+          continue;
+        }
+
+        if (data.error) {
+          throw new Error(data.error.message || 'YouTube API error');
+        }
+
+        return data;
+      } catch (err) {
+        lastError = err;
+      }
+    }
+    throw lastError || new Error('Failed to fetch from YouTube API with all keys.');
+  }
+
   private async runSyncInBackground(channelId: string, sinceDate: Date | null = null) {
     const key = `global:${channelId}`;
     const progress = this.syncProgress.get(key);
     try {
-      const apiKey = process.env.YOUTUBE_API_KEY;
-      if (!apiKey) throw new Error('YouTube API key is not configured.');
-
       const globalChannel = await this.prisma.globalYoutubeChannel.findUnique({
         where: { channelId },
         include: { playlists: true },
@@ -1618,10 +1676,10 @@ export class CentersService {
 
       // STEP 1: New playlist discovery — always fetch playlist list (1 API call)
       // Compare with DB and upsert any new playlists found.
-      const chanRes = await fetch(
-        `https://www.googleapis.com/youtube/v3/channels?part=contentDetails&id=${channelId}&key=${apiKey}`
-      );
-      const chanData = await chanRes.json() as any;
+      const chanData = await this.fetchFromYoutube('youtube/v3/channels', {
+        part: 'contentDetails',
+        id: channelId,
+      });
       if (!chanData.items || chanData.items.length === 0) {
         throw new Error('Failed to find channel details from YouTube API.');
       }
@@ -1646,8 +1704,14 @@ export class CentersService {
       // Fetch all playlists and upsert new ones
       let plPageToken: string | undefined = undefined;
       do {
-        const plUrl = `https://www.googleapis.com/youtube/v3/playlists?part=snippet&channelId=${channelId}&maxResults=50&key=${apiKey}${plPageToken ? `&pageToken=${plPageToken}` : ''}`;
-        const playlistsData = await (await fetch(plUrl)).json() as any;
+        const params: Record<string, string> = {
+          part: 'snippet',
+          channelId,
+          maxResults: '50',
+        };
+        if (plPageToken) params.pageToken = plPageToken;
+
+        const playlistsData = await this.fetchFromYoutube('youtube/v3/playlists', params);
         if (playlistsData.items?.length > 0) {
           for (const item of playlistsData.items) {
             await this.prisma.youtubePlaylist.upsert({
@@ -1699,8 +1763,14 @@ export class CentersService {
           let latestVideoAt: Date | null = null;
 
           while (!doneWithPlaylist) {
-            const url = `https://www.googleapis.com/youtube/v3/playlistItems?part=snippet,status&playlistId=${playlist.playlistId}&maxResults=50&key=${apiKey}${pageToken ? `&pageToken=${pageToken}` : ''}`;
-            const listData = await (await fetch(url)).json() as any;
+            const params: Record<string, string> = {
+              part: 'snippet,status',
+              playlistId: playlist.playlistId,
+              maxResults: '50',
+            };
+            if (pageToken) params.pageToken = pageToken;
+
+            const listData = await this.fetchFromYoutube('youtube/v3/playlistItems', params);
 
             if (listData.items) {
               for (const item of listData.items) {
@@ -1766,9 +1836,10 @@ export class CentersService {
         if (progress.status === 'cancelled') return;
         const chunk = videoIdsToQuery.slice(i, i + 50);
         try {
-          const detailData = await (await fetch(
-            `https://www.googleapis.com/youtube/v3/videos?part=contentDetails&id=${chunk.join(',')}&key=${apiKey}`
-          )).json() as any;
+          const detailData = await this.fetchFromYoutube('youtube/v3/videos', {
+            part: 'contentDetails',
+            id: chunk.join(','),
+          });
           if (detailData.items) {
             for (const d of detailData.items) {
               durationMap.set(d.id, parseISO8601Duration(d.contentDetails?.duration));
@@ -1852,8 +1923,7 @@ export class CentersService {
   }
 
   async fillMissingMetadataInBackground(channelId: string) {
-    const apiKey = process.env.YOUTUBE_API_KEY;
-    if (!apiKey) return;
+    if (!process.env.YOUTUBE_API_KEY) return;
 
     try {
       const globalChannel = await this.prisma.globalYoutubeChannel.findUnique({
@@ -1880,10 +1950,10 @@ export class CentersService {
         const chunk = videosToRepair.slice(i, i + 50);
         const idsParam = chunk.map(v => v.youtubeId).join(',');
 
-        const res = await fetch(
-          `https://www.googleapis.com/youtube/v3/videos?part=snippet&id=${idsParam}&key=${apiKey}`
-        );
-        const data = await res.json() as any;
+        const data = await this.fetchFromYoutube('youtube/v3/videos', {
+          part: 'snippet',
+          id: idsParam,
+        });
 
         if (data.items) {
           for (const item of data.items) {
