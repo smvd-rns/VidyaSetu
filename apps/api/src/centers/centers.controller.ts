@@ -101,12 +101,47 @@ export class CentersController {
     return this.centersService.updateMembershipRole(membershipId, role);
   }
 
+  /** Super Admin: change a user's global role */
+  @Patch('users/:userId/global-role')
+  @UseGuards(GlobalRolesGuard)
+  @GlobalRoles(GlobalRole.SUPER_ADMIN)
+  updateUserGlobalRole(
+    @Param('userId') userId: string,
+    @Body('globalRole') globalRole: GlobalRole,
+  ) {
+    return this.centersService.updateUserGlobalRole(userId, globalRole);
+  }
+
   /** Super Admin: list all linked YouTube channels */
   @Get('youtube-channels')
   @UseGuards(GlobalRolesGuard)
   @GlobalRoles(GlobalRole.SUPER_ADMIN)
   listAllYoutubeChannels() {
     return this.centersService.listAllYoutubeChannels();
+  }
+
+  /** Super Admin: start a sync queue of channels */
+  @Post('sync-queue')
+  @UseGuards(GlobalRolesGuard)
+  @GlobalRoles(GlobalRole.SUPER_ADMIN)
+  startSyncQueue(@Body('channelIds') channelIds: string[]) {
+    return this.centersService.startSyncQueue(channelIds);
+  }
+
+  /** Super Admin: get status of sync queue */
+  @Get('sync-queue')
+  @UseGuards(GlobalRolesGuard)
+  @GlobalRoles(GlobalRole.SUPER_ADMIN)
+  getSyncQueueStatus() {
+    return this.centersService.getSyncQueueStatus();
+  }
+
+  /** Super Admin: cancel sync queue */
+  @Delete('sync-queue')
+  @UseGuards(GlobalRolesGuard)
+  @GlobalRoles(GlobalRole.SUPER_ADMIN)
+  cancelSyncQueue() {
+    return this.centersService.cancelSyncQueue();
   }
 
   /** Super Admin: pending applications */

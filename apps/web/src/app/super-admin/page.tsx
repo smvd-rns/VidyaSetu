@@ -72,13 +72,14 @@ interface User {
 interface YoutubeChannel {
   id: string;
   channelId: string;
+  centerId: string;
   title: string;
   description: string | null;
   thumbnail: string | null;
   isActive: boolean;
   lastSyncedAt: string | null;
   center: {
-    id: string;
+    id?: string;
     name: string;
   };
   batches: {
@@ -191,8 +192,39 @@ function SuperAdminContent() {
     }
   };
 
+  async function checkQueueStatus() {
+    try {
+      const queue = await api<any>('/centers/sync-queue');
+      if (queue && queue.status === 'running') {
+        setIsSyncingQueue(true);
+        setSyncProgressText(queue.progressText);
+        return true;
+      } else {
+        setIsSyncingQueue(false);
+        if (queue && queue.progressText) {
+          setSyncProgressText(queue.progressText);
+        }
+        return false;
+      }
+    } catch (err) {
+      console.error(err);
+      return false;
+    }
+  }
+
   useEffect(() => {
     loadData();
+    checkQueueStatus();
+
+    const interval = setInterval(async () => {
+      const isRunning = await checkQueueStatus();
+      if (!isRunning) {
+        const ytList = await api<YoutubeChannel[]>('/centers/youtube-channels').catch(() => []);
+        if (ytList.length > 0) setYoutubeChannels(ytList);
+      }
+    }, 2000);
+
+    return () => clearInterval(interval);
   }, [router]);
 
   async function review(id: string, status: 'APPROVED' | 'REJECTED') {
@@ -272,50 +304,52 @@ function SuperAdminContent() {
     }
   }
 
+  async function handleGlobalRoleChange(userId: string, globalRole: string) {
+    setActionLoadingId(`global-role-${userId}`);
+    try {
+      await api(`/centers/users/${userId}/global-role`, {
+        method: 'PATCH',
+        body: JSON.stringify({ globalRole }),
+      });
+      await loadData();
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setActionLoadingId(null);
+    }
+  }
+
   async function handleSyncSelected() {
     if (selectedChannelIds.length === 0) return;
     setIsSyncingQueue(true);
+    setSyncProgressText('Initiating server-side sync queue...');
     
     try {
       const channelsToSync = youtubeChannels.filter((ch) =>
         selectedChannelIds.includes(ch.id)
       );
+      const ids = channelsToSync.map(ch => ch.channelId);
 
-      for (let i = 0; i < channelsToSync.length; i++) {
-        const ch = channelsToSync[i];
-        setSyncProgressText(`[${i + 1}/${channelsToSync.length}] Initiating sync for "${ch.title}"...`);
-        
-        try {
-          await api(`/centers/${ch.center.id}/youtube/channels/${ch.channelId}/sync`, {
-            method: 'POST',
-          });
-
-          let isRunning = true;
-          while (isRunning) {
-            await new Promise((resolve) => setTimeout(resolve, 2000));
-            const progress = await api<any>(`/centers/${ch.center.id}/youtube/channels/${ch.channelId}/sync-status`);
-            
-            if (progress.status === 'syncing') {
-              const stageText = progress.stage ? ` (${progress.stage})` : '';
-              setSyncProgressText(
-                `[${i + 1}/${channelsToSync.length}] Syncing "${ch.title}"${stageText}...`
-              );
-            } else {
-              isRunning = false;
-            }
-          }
-        } catch (err: any) {
-          console.error(`Failed to sync channel ${ch.title}:`, err);
-        }
-      }
-      setSyncProgressText('All selected channels synchronized successfully!');
-      setTimeout(() => setSyncProgressText(''), 5000);
+      await api('/centers/sync-queue', {
+        method: 'POST',
+        body: JSON.stringify({ channelIds: ids }),
+      });
+      
       setSelectedChannelIds([]);
-      await loadData();
-    } catch (error) {
-      console.error('Error during batch sync execution:', error);
-    } finally {
+    } catch (err: any) {
+      console.error('Failed to start sync queue:', err);
       setIsSyncingQueue(false);
+    }
+  }
+
+  async function handleCancelQueue() {
+    try {
+      await api('/centers/sync-queue', {
+        method: 'DELETE',
+      });
+      await checkQueueStatus();
+    } catch (err) {
+      console.error('Failed to cancel sync queue:', err);
     }
   }
 
@@ -620,9 +654,22 @@ function SuperAdminContent() {
 
             {/* Sync Progress Alert */}
             {syncProgressText && (
-              <div className="bg-indigo-50 border border-indigo-100 rounded-2xl p-4 shadow-sm flex items-center gap-3">
-                <div className="w-5 h-5 border-2 border-indigo-200 border-t-indigo-600 rounded-full animate-spin shrink-0" />
-                <span className="text-xs font-extrabold text-indigo-900 leading-snug">{syncProgressText}</span>
+              <div className="bg-indigo-50 border border-indigo-100 rounded-2xl p-4 shadow-sm flex items-center justify-between gap-3">
+                <div className="flex items-center gap-3">
+                  {isSyncingQueue && (
+                    <div className="w-5 h-5 border-2 border-indigo-200 border-t-indigo-600 rounded-full animate-spin shrink-0" />
+                  )}
+                  <span className="text-xs font-extrabold text-indigo-900 leading-snug">{syncProgressText}</span>
+                </div>
+                {isSyncingQueue && (
+                  <button
+                    type="button"
+                    onClick={handleCancelQueue}
+                    className="text-xs font-bold text-red-600 hover:text-red-800 transition bg-white border border-red-100 hover:bg-red-50 px-3 py-1.5 rounded-lg shadow-sm cursor-pointer shrink-0"
+                  >
+                    ⛔ Cancel Queue
+                  </button>
+                )}
               </div>
             )}
           </div>
@@ -893,11 +940,19 @@ function SuperAdminContent() {
                     <div>
                       <div className="flex items-center gap-2">
                         <h4 className="font-extrabold text-indigo-950 text-base leading-tight">{u.firstName} {u.lastName}</h4>
-                        <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-black uppercase shrink-0 border shadow-sm ${
-                          u.globalRole === 'SUPER_ADMIN' ? 'bg-indigo-100 text-indigo-700 border-indigo-200' : 'bg-white/80 text-indigo-900/60 border-indigo-900/10'
-                        }`}>
-                          {u.globalRole}
-                        </span>
+                        <select
+                          value={u.globalRole}
+                          disabled={actionLoadingId === `global-role-${u.id}`}
+                          onChange={(e) => handleGlobalRoleChange(u.id, e.target.value)}
+                          className={`bg-white border rounded-full text-[10px] py-0.5 px-2.5 font-black uppercase focus:outline-none focus:ring-1 focus:ring-indigo-400 cursor-pointer shadow-sm ${
+                            u.globalRole === 'SUPER_ADMIN' 
+                              ? 'text-indigo-700 border-indigo-200 bg-indigo-50' 
+                              : 'text-indigo-900/60 border-indigo-900/10 bg-slate-50'
+                          }`}
+                        >
+                          <option value="USER">User</option>
+                          <option value="SUPER_ADMIN">Super Admin</option>
+                        </select>
                       </div>
                       <p className="text-xs text-indigo-900/60 font-semibold mt-0.5">{u.email}</p>
                     </div>

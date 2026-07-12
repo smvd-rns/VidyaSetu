@@ -11,6 +11,7 @@ import {
   CenterMemberRole,
   CenterStatus,
   SubscriptionStatus,
+  GlobalRole,
 } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { GoogleDriveService } from './google-drive.service';
@@ -41,6 +42,13 @@ import * as crypto from 'crypto';
 @Injectable()
 export class CentersService {
   private syncProgress = new Map<string, any>();
+  private syncQueue = {
+    channelIds: [] as string[],
+    currentIndex: -1,
+    currentChannelId: null as string | null,
+    status: 'idle' as 'idle' | 'running' | 'cancelled',
+    progressText: '',
+  };
 
   constructor(
     private prisma: PrismaService,
@@ -261,6 +269,108 @@ export class CentersService {
       where: { id: membershipId },
       data: { role },
     });
+  }
+
+  async startSyncQueue(channelIds: string[]) {
+    if (this.syncQueue.status === 'running') {
+      throw new BadRequestException('A sync queue is already running.');
+    }
+
+    this.syncQueue.channelIds = channelIds;
+    this.syncQueue.currentIndex = 0;
+    this.syncQueue.status = 'running';
+    this.syncQueue.progressText = `Queue started with ${channelIds.length} channel(s).`;
+
+    // Trigger the queue processing in background
+    this.processSyncQueue().catch((err) => {
+      console.error('Error processing sync queue:', err);
+    });
+
+    return { started: true };
+  }
+
+  async getSyncQueueStatus() {
+    return {
+      status: this.syncQueue.status,
+      currentIndex: this.syncQueue.currentIndex,
+      totalChannels: this.syncQueue.channelIds.length,
+      currentChannelId: this.syncQueue.currentChannelId,
+      progressText: this.syncQueue.progressText,
+    };
+  }
+
+  async cancelSyncQueue() {
+    if (this.syncQueue.status !== 'running') {
+      return { cancelled: false, message: 'Queue is not running.' };
+    }
+    this.syncQueue.status = 'cancelled';
+    this.syncQueue.progressText = 'Sync queue cancelled by administrator.';
+    
+    // Also cancel the currently running channel sync if any
+    if (this.syncQueue.currentChannelId) {
+      const key = `global:${this.syncQueue.currentChannelId}`;
+      const progress = this.syncProgress.get(key);
+      if (progress && progress.status === 'syncing') {
+        progress.status = 'cancelled';
+      }
+    }
+    
+    return { cancelled: true };
+  }
+
+  private async processSyncQueue() {
+    while (
+      this.syncQueue.status === 'running' &&
+      this.syncQueue.currentIndex < this.syncQueue.channelIds.length
+    ) {
+      const channelId = this.syncQueue.channelIds[this.syncQueue.currentIndex];
+      this.syncQueue.currentChannelId = channelId;
+
+      // Get channel title for progress description
+      const globalChannel = await this.prisma.globalYoutubeChannel.findUnique({
+        where: { channelId },
+        select: { title: true },
+      });
+      const channelTitle = globalChannel?.title || channelId;
+
+      this.syncQueue.progressText = `[${this.syncQueue.currentIndex + 1}/${this.syncQueue.channelIds.length}] Syncing channel "${channelTitle}"...`;
+
+      try {
+        await this.syncYoutubeChannelVideos(channelId, false);
+
+        // We poll the status of this channel's sync until it completes, fails, or gets cancelled
+        let isChannelSyncing = true;
+        const key = `global:${channelId}`;
+        while (isChannelSyncing && this.syncQueue.status === 'running') {
+          await new Promise((resolve) => setTimeout(resolve, 2000));
+          const progress = this.syncProgress.get(key);
+          if (progress) {
+            if (progress.status === 'syncing') {
+              const stageText = progress.stage ? ` (${progress.stage})` : '';
+              this.syncQueue.progressText = `[${this.syncQueue.currentIndex + 1}/${this.syncQueue.channelIds.length}] Syncing "${channelTitle}"${stageText}...`;
+            } else {
+              isChannelSyncing = false;
+            }
+          } else {
+            isChannelSyncing = false;
+          }
+        }
+      } catch (err) {
+        console.error(`Sync queue failed for channel ${channelId}:`, err);
+      }
+
+      if ((this.syncQueue.status as string) === 'cancelled') {
+        break;
+      }
+
+      this.syncQueue.currentIndex++;
+    }
+
+    if ((this.syncQueue.status as string) === 'running') {
+      this.syncQueue.status = 'idle';
+      this.syncQueue.currentChannelId = null;
+      this.syncQueue.progressText = 'All selected channels successfully synced!';
+    }
   }
 
   async listAllYoutubeChannels() {
@@ -1622,7 +1732,7 @@ export class CentersService {
     this.syncProgress.set(key, initial);
 
     // Run the sync process in the background
-    this.runSyncInBackground(channelId, sinceDate).catch((err) => {
+    this.runSyncInBackground(channelId, sinceDate, force).catch((err) => {
       console.error(`Background sync failed for channel ${channelId}:`, err);
     });
 
@@ -1661,7 +1771,7 @@ export class CentersService {
     throw lastError || new Error('Failed to fetch from YouTube API with all keys.');
   }
 
-  private async runSyncInBackground(channelId: string, sinceDate: Date | null = null) {
+  private async runSyncInBackground(channelId: string, sinceDate: Date | null = null, force = false) {
     const key = `global:${channelId}`;
     const progress = this.syncProgress.get(key);
     try {
@@ -1670,6 +1780,13 @@ export class CentersService {
         include: { playlists: true },
       });
       if (!globalChannel) throw new Error('Global YouTube channel not found.');
+
+      if (force) {
+        await this.prisma.youtubePlaylist.updateMany({
+          where: { channelId: globalChannel.id },
+          data: { isFullySynced: false },
+        });
+      }
 
       progress.stage = 'fetching_playlists';
       let playlistsToSync: any[];
@@ -1746,8 +1863,8 @@ export class CentersService {
           (p) => !p.lastVideoAt || p.lastVideoAt >= twoDaysAgo
         );
       } else {
-        // FULL SCAN: sync everything
-        playlistsToSync = allDbPlaylists;
+        // FULL SCAN: sync everything except those already fully synced
+        playlistsToSync = allDbPlaylists.filter((p) => !p.isFullySynced);
       }
 
       progress.playlistsTotal = playlistsToSync.length;
@@ -1805,13 +1922,14 @@ export class CentersService {
             }
           }
 
-          // Update lastVideoAt on this playlist
-          if (latestVideoAt) {
-            await this.prisma.youtubePlaylist.update({
-              where: { id: playlist.id },
-              data: { lastVideoAt: latestVideoAt },
-            });
-          }
+          // Update lastVideoAt and isFullySynced on this playlist
+          await this.prisma.youtubePlaylist.update({
+            where: { id: playlist.id },
+            data: {
+              isFullySynced: true,
+              lastVideoAt: latestVideoAt ?? undefined,
+            },
+          });
           progress.playlistsProcessed++;
         } catch (err) {
           console.error(`Failed to fetch items for playlist ${playlist.playlistId}:`, err);
@@ -2269,6 +2387,18 @@ export class CentersService {
     return this.prisma.centerMedia.findMany({
       where: { centerId },
       orderBy: { createdAt: 'desc' },
+    });
+  }
+
+  async updateUserGlobalRole(userId: string, globalRole: GlobalRole) {
+    return this.prisma.user.update({
+      where: { id: userId },
+      data: { globalRole },
+      select: {
+        id: true,
+        email: true,
+        globalRole: true,
+      },
     });
   }
 }
