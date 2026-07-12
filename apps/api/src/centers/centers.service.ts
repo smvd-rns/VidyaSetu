@@ -405,6 +405,7 @@ export class CentersService {
         description: c.description,
         thumbnail: c.thumbnail,
         isActive: sub.isActive,
+        lastSyncedAt: c.lastSyncedAt,
         createdAt: sub.createdAt,
         updatedAt: sub.updatedAt,
         center: sub.center,
